@@ -11,7 +11,8 @@ mod history_repair;
 use history_repair::*;
 
 /// Claude Code billing attribution text observed in the official CLI's system
-/// prompt blocks.
+/// prompt blocks; its version is shared with the OAuth preflight and can be
+/// overridden with `JCODE_CLAUDE_CODE_VERSION`.
 ///
 /// On Claude subscription (OAuth) requests this is sent as the first system
 /// block, as plain text, not as an HTTP header despite the name. Anthropic
@@ -35,7 +36,7 @@ use history_repair::*;
 /// shows the billing block alone is rejected. If you change this, re-run
 /// `scripts/anthropic_oauth_identity_probe.py claude-opus-4-5` (not Haiku).
 /// Full write-up: docs/ANTHROPIC_OAUTH_IDENTITY_PROBE_2026_11_05.md
-pub const OAUTH_BILLING_HEADER: &str = "cc_version=2.1.280; cc_entrypoint=sdk-cli; cch=33f85;";
+pub use jcode_provider_core::claude_code_billing_header;
 
 /// Minimal user turn appended when a formatted conversation would otherwise end
 /// on an assistant message, which Anthropic rejects on non-prefill models.
@@ -700,10 +701,13 @@ pub fn build_system_param_split(
     if is_oauth {
         let mut blocks = Vec::new();
         // Billing attribution block. Required for OAuth acceptance on larger
-        // models. Intentionally no identity sentence, see OAUTH_BILLING_HEADER.
+        // models. Intentionally no identity sentence, see claude_code_billing_header.
         blocks.push(ApiSystemBlock {
             block_type: "text",
-            text: format!("x-anthropic-billing-header: {}", OAUTH_BILLING_HEADER),
+            text: format!(
+                "x-anthropic-billing-header: {}",
+                claude_code_billing_header()
+            ),
             cache_control: None,
         });
         // Static content - CACHED (instruction files, base prompt, skills)
