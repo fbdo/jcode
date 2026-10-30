@@ -117,6 +117,7 @@ pub fn hook_commands(event: &str) -> Vec<String> {
         "swarm_member_start" => hooks.swarm_member_start.as_ref(),
         "swarm_member_end" => hooks.swarm_member_end.as_ref(),
         "user_prompt_submit" => hooks.user_prompt_submit.as_ref(),
+        "stop" => hooks.stop.as_ref(),
         _ => None,
     };
     raw.into_iter()
@@ -322,6 +323,7 @@ mod json_runner;
 mod origin;
 mod payload;
 mod prompt_submit;
+mod stop;
 mod sync_runner;
 
 pub use capabilities::hook_capabilities;
@@ -340,6 +342,10 @@ pub use payload::{TEXT_FIELD_LIMIT, common_payload, jcode_object, truncate_marke
 pub use prompt_submit::{
     PromptSubmit, PromptSubmitOutcome, combine as combine_prompt_verdicts, prompt_payload,
     run_user_prompt_submit,
+};
+pub use stop::{
+    StopInput, StopOutcome, decide as decide_stop, reset_stop_continuations, run_stop_hook,
+    stop_continuations, stop_payload,
 };
 
 #[cfg(test)]
