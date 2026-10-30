@@ -240,6 +240,9 @@ pub struct RemoteConnection {
     cloud_authority: Option<std::sync::Weak<std::sync::atomic::AtomicBool>>,
     cloud_callbacks: Vec<tokio::task::AbortHandle>,
     client_instance_id: Option<String>,
+    /// Origin for the next `Message` request (`auto` for client-generated
+    /// sends). Consumed by the send; absent means a person typed it.
+    next_message_origin: Option<&'static str>,
     next_request_id: u64,
     // Bootstrap Done acknowledgments are not completions of a detached turn.
     // Retain recent ids because target Subscribe can acknowledge twice.
@@ -362,6 +365,7 @@ impl RemoteConnection {
             // connection's Subscribe/GetHistory acknowledgments.
             next_request_id: (rand::random::<u64>() & ((1_u64 << 62) - 1)) | (1_u64 << 62),
             control_done_ids: Default::default(),
+            next_message_origin: None,
             tool_diff: RemoteDiffTracker::default(),
             read_buffer: Vec::new(),
             read_buffer_scan_start: 0,
@@ -640,6 +644,12 @@ impl RemoteConnection {
             .await
     }
 
+    /// Mark the next message as client-generated (`auto`: poke, retry, system
+    /// sends) so `user_prompt_submit` hooks do not mistake it for a person.
+    pub fn mark_next_message_auto(&mut self) {
+        self.next_message_origin = Some("auto");
+    }
+
     pub async fn send_message_with_images_reminder_and_skill(
         &mut self,
         content: String,
@@ -658,6 +668,7 @@ impl RemoteConnection {
             images,
             system_reminder,
             active_skill,
+            origin: self.next_message_origin.take().map(str::to_string),
             no_reply: false,
         };
         self.next_request_id += 1;
@@ -1405,6 +1416,7 @@ impl RemoteConnection {
             client_instance_id: None,
             next_request_id: 1,
             control_done_ids: Default::default(),
+            next_message_origin: None,
             tool_diff: RemoteDiffTracker::default(),
             read_buffer: Vec::new(),
             read_buffer_scan_start: 0,

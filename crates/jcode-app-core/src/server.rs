@@ -1169,6 +1169,10 @@ impl Server {
                     session_id.clone(),
                     Arc::clone(&recover_swarm_members),
                 );
+                crate::hooks::set_pending_prompt_origin(
+                    &session_id,
+                    crate::hooks::PromptOrigin::Reminder,
+                );
                 let result = self::turn_failover::process_server_initiated_message(
                     Arc::clone(&agent),
                     "",

@@ -859,6 +859,10 @@ pub(super) async fn spawn_swarm_agent(
                     let agent = agent_arc.lock().await;
                     agent.message_count()
                 };
+                crate::hooks::set_pending_prompt_origin(
+                    &sid_clone,
+                    crate::hooks::PromptOrigin::SwarmSpawn,
+                );
                 let result = process_server_initiated_message(
                     Arc::clone(&agent_arc),
                     &initial_msg,
