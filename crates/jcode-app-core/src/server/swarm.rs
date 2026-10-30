@@ -1706,6 +1706,7 @@ pub(super) async fn update_member_status_with_report_tldr(
         old_status,
         _is_headless,
         report_back_to_session_id,
+        running_ms,
     ) = {
         let mut members = swarm_members.write().await;
         if let Some(member) = members.get_mut(session_id) {
@@ -1726,6 +1727,7 @@ pub(super) async fn update_member_status_with_report_tldr(
                 });
             }
             let previous_status = member.status.clone();
+            let running_ms = member.last_status_change.elapsed().as_millis() as u64;
             let status_changed = member.status != status;
             let detail_changed = member.detail != detail;
             if status_changed
@@ -1783,11 +1785,22 @@ pub(super) async fn update_member_status_with_report_tldr(
                 previous_status,
                 is_headless,
                 report_back_to_session_id,
+                running_ms,
             )
         } else {
-            (None, None, false, false, String::new(), false, None)
+            (None, None, false, false, String::new(), false, None, 0)
         }
     };
+    if swarm_id.is_some() {
+        super::swarm_hooks::member_status_changed(&super::swarm_hooks::StatusTransition {
+            session_id,
+            old_status: &old_status,
+            new_status: status,
+            status_changed,
+            duration_ms: running_ms,
+            completion_report: completion_report.as_deref(),
+        });
+    }
     if let Some(ref id) = swarm_id {
         if !member_changed {
             return;
@@ -1902,6 +1915,7 @@ struct InlineWorkerEnv(String);
 impl Drop for InlineWorkerEnv {
     fn drop(&mut self) {
         crate::session_env::remove_session_env(&self.0);
+        crate::hooks::forget_swarm_identity(&self.0);
     }
 }
 

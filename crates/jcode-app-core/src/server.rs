@@ -65,6 +65,7 @@ mod runtime_upgrade;
 mod socket;
 mod swarm;
 mod swarm_channels;
+mod swarm_hooks;
 mod swarm_labels;
 mod swarm_mutation_state;
 mod swarm_persistence;
@@ -191,6 +192,7 @@ pub(super) async fn remove_session_entry<T>(
     if removed.is_some() {
         crate::storage::unregister_active_pid(session_id);
         crate::session_env::remove_session_env(session_id);
+        crate::hooks::forget_swarm_identity(session_id);
     }
     removed
 }

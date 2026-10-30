@@ -82,9 +82,8 @@ fn interpret_stdout(stdout: &str, hook_name: &str) -> Verdict {
     let mut verdict = Verdict::default();
     let decision = text(&value, "decision").map(|d| d.to_ascii_lowercase());
     if matches!(decision.as_deref(), Some("block" | "deny")) {
-        verdict.block = Some(
-            text(&value, "reason").unwrap_or_else(|| format!("blocked by {hook_name} hook")),
-        );
+        verdict.block =
+            Some(text(&value, "reason").unwrap_or_else(|| format!("blocked by {hook_name} hook")));
     }
     if value.get("continue").and_then(Value::as_bool) == Some(false) {
         verdict.halt = Some(
@@ -121,7 +120,10 @@ mod tests {
 
     #[test]
     fn odd_exit_fails_open() {
-        assert_eq!(interpret(&result(Some(7), "{\"decision\":\"block\"}", "x"), "stop"), Verdict::default());
+        assert_eq!(
+            interpret(&result(Some(7), "{\"decision\":\"block\"}", "x"), "stop"),
+            Verdict::default()
+        );
         assert_eq!(interpret(&result(None, "", ""), "stop"), Verdict::default());
     }
 
