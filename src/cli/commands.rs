@@ -11,11 +11,11 @@ use crate::{browser, gateway, memory, session, storage, tui};
 
 use super::{output::terminal_title, terminal::init_tui_runtime};
 
-mod mcp_trust;
 mod menubar;
 mod provider_setup;
 mod report_info;
 mod restart;
+mod trust;
 
 pub(crate) use super::auth_test::run_post_login_validation;
 #[cfg(test)]
@@ -26,15 +26,13 @@ pub(crate) use super::auth_test::{
 pub use super::auth_test::{
     run_auth_test_command, run_auth_test_context_audit_command, run_auth_test_coverage_command,
 };
-pub(crate) use mcp_trust::{
-    maybe_prompt_for_project_mcp_trust, run_mcp_revoke_command, run_mcp_trust_command,
-};
 pub use menubar::{ensure_menubar_helper_running, run_menubar_command};
 pub(crate) use provider_setup::{ProviderAddOptions, run_provider_add_command};
 pub use restart::{
     maybe_run_pending_restart_restore_on_startup, run_restart_clear_command,
     run_restart_restore_command, run_restart_save_command, run_restart_status_command,
 };
+pub(crate) use trust::{maybe_prompt_for_project_trust, run_trust_command};
 
 pub enum AmbientSubcommand {
     Status,

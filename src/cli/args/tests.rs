@@ -239,6 +239,44 @@ fn mcp_trust_subcommands_parse() {
 }
 
 #[test]
+fn trust_subcommands_parse() {
+    let grant = Args::try_parse_from([
+        "jcode", "trust", "grant", "/tmp/p", "--scope", "hooks", "-y",
+    ])
+    .expect("trust grant should parse");
+    assert!(matches!(
+        grant.command,
+        Some(Command::Trust {
+            action: TrustCommand::Grant {
+                path: Some(_),
+                scope: TrustScopeArg::Hooks,
+                yes: true
+            }
+        })
+    ));
+    let default_scope = Args::try_parse_from(["jcode", "trust", "grant"]).unwrap();
+    assert!(matches!(
+        default_scope.command,
+        Some(Command::Trust {
+            action: TrustCommand::Grant {
+                scope: TrustScopeArg::All,
+                yes: false,
+                ..
+            }
+        })
+    ));
+    assert!(matches!(
+        Args::try_parse_from(["jcode", "trust", "list"])
+            .unwrap()
+            .command,
+        Some(Command::Trust {
+            action: TrustCommand::List
+        })
+    ));
+    assert!(Args::try_parse_from(["jcode", "trust", "grant", "--scope", "bogus"]).is_err());
+}
+
+#[test]
 fn test_provider_choice_aliases_parse() {
     let args = Args::try_parse_from(["jcode", "--provider", "z.ai", "run", "smoke"]).unwrap();
     assert_eq!(args.provider, ProviderChoice::Zai);
