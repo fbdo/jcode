@@ -5,7 +5,10 @@
 //! numbers. Each feature adds its own token here in the change that ships it.
 
 /// Capability tokens, kept sorted so the output is stable.
-const TOKENS: &[&str] = &["skill_precedence_jcode"];
+const TOKENS: &[&str] = &[
+    "skill_arguments",
+    "skill_precedence_jcode",
+];
 
 /// Sorted, de-duplicated capability tokens supported by this build.
 pub fn hook_capabilities() -> Vec<&'static str> {
