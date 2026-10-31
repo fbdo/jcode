@@ -28,7 +28,9 @@ impl Agent {
         last_assistant_message: &str,
         notice: impl FnOnce(String),
     ) -> Result<bool> {
-        if self.is_graceful_shutdown() || !crate::hooks::hook_configured("stop") {
+        if self.is_graceful_shutdown()
+            || !crate::hooks::hook_configured_for("stop", self.working_dir())
+        {
             return Ok(false);
         }
         let outcome = crate::hooks::run_stop_hook(&StopInput {

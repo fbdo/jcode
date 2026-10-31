@@ -47,9 +47,10 @@ pub(super) fn worker_spawned(worker: &SpawnedWorker<'_>) {
         parent_session_id: worker.coordinator_session_id.to_string(),
         label: worker.label.map(str::to_string),
         agent_type: worker.agent_type.map(str::to_string),
+        working_dir: worker.working_dir.map(str::to_string),
     };
     hooks::register_swarm_identity(worker.session_id, identity.clone());
-    if !hooks::hook_configured("swarm_member_start") {
+    if !hooks::hook_configured_for("swarm_member_start", worker.working_dir) {
         return;
     }
     let agent_type = worker.agent_type.or(worker.label);
@@ -101,13 +102,17 @@ pub(super) fn member_status_changed(transition: &StatusTransition<'_>) {
     if !transition.status_changed
         || !is_running_status(transition.old_status)
         || !is_end_status(transition.new_status)
-        || !hooks::hook_configured("swarm_member_end")
     {
         return;
     }
     let Some(identity) = hooks::swarm_identity(transition.session_id) else {
         return;
     };
+    // Observers run in the coordinator's context, so a trusted project hook is
+    // looked up from the coordinator's working directory.
+    if !hooks::hook_configured_for("swarm_member_end", identity.working_dir.as_deref()) {
+        return;
+    }
     let agent_type = identity.agent_type.as_ref().or(identity.label.as_ref());
     let mut payload = hooks::common_payload(
         "SubagentStop",
@@ -143,6 +148,9 @@ pub(super) fn member_status_changed(transition: &StatusTransition<'_>) {
     }
     if let Some(label) = &identity.label {
         event = event.field("SWARM_LABEL", label.clone());
+    }
+    if let Some(cwd) = identity.working_dir.as_deref() {
+        event = event.cwd(cwd);
     }
     hooks::dispatch_observer(event);
 }

@@ -18,6 +18,9 @@ pub struct SwarmIdentity {
     pub label: Option<String>,
     /// Agent definition name when spawned with one, else the label.
     pub agent_type: Option<String>,
+    /// Working directory the worker was spawned in, which is where the
+    /// coordinator-side observers look up project hooks.
+    pub working_dir: Option<String>,
 }
 
 static REGISTRY: LazyLock<RwLock<HashMap<String, SwarmIdentity>>> =
@@ -91,6 +94,7 @@ mod tests {
             parent_session_id: "parent".into(),
             label: label.map(str::to_string),
             agent_type: agent_type.map(str::to_string),
+            working_dir: None,
         }
     }
 

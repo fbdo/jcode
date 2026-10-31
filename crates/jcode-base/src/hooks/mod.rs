@@ -402,9 +402,9 @@ mod json_output;
 mod json_runner;
 mod origin;
 mod payload;
+mod project;
 mod prompt_submit;
 mod stop;
-mod project;
 mod sync_runner;
 
 pub use capabilities::hook_capabilities;
@@ -420,6 +420,7 @@ pub use origin::{
     set_pending_prompt_origin,
 };
 pub use payload::{TEXT_FIELD_LIMIT, common_payload, jcode_object, truncate_marked};
+pub use project::{CommandScope, ScopedCommand, hooks_scope_review, project_hooks_digest};
 pub use prompt_submit::{
     PromptSubmit, PromptSubmitOutcome, combine as combine_prompt_verdicts, prompt_payload,
     run_user_prompt_submit,
@@ -428,7 +429,6 @@ pub use stop::{
     StopInput, StopOutcome, decide as decide_stop, reset_stop_continuations, run_stop_hook,
     stop_continuations, stop_payload,
 };
-pub use project::{CommandScope, ScopedCommand, hooks_scope_review, project_hooks_digest};
 
 #[cfg(test)]
 #[allow(clippy::await_holding_lock)]

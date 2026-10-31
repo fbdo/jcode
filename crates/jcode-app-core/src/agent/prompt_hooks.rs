@@ -27,7 +27,7 @@ impl Agent {
             context: None,
             origin,
         };
-        if !crate::hooks::hook_configured("user_prompt_submit") {
+        if !crate::hooks::hook_configured_for("user_prompt_submit", self.working_dir()) {
             return Ok(decision);
         }
         let outcome = crate::hooks::run_user_prompt_submit(&PromptSubmit {

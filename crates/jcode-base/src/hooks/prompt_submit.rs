@@ -6,9 +6,8 @@
 //! message, and every failure fails open.
 
 use super::origin::PromptOrigin;
-use super::{HookEvent, Verdict, common_payload, hook_commands, interpret, jcode_object};
+use super::{HookEvent, Verdict, common_payload, hook_commands_for, interpret, jcode_object};
 use serde_json::{Value, json};
-use std::time::Duration;
 
 /// Default and maximum wait per command.
 const DEFAULT_TIMEOUT_MS: u64 = 5_000;
@@ -88,20 +87,19 @@ pub fn combine(verdicts: &[Verdict]) -> PromptSubmitOutcome {
     }
 }
 
-fn timeout() -> Duration {
+fn timeout_ms() -> u64 {
     let configured = crate::config::config().hooks.user_prompt_submit_timeout_ms;
-    let ms = if configured == 0 {
+    if configured == 0 {
         DEFAULT_TIMEOUT_MS
     } else {
         configured.min(MAX_TIMEOUT_MS)
-    };
-    Duration::from_millis(ms)
+    }
 }
 
 /// Run the configured `user_prompt_submit` commands. Returns `None` when none
 /// are configured, so the hot path costs one lookup.
 pub async fn run_user_prompt_submit(input: &PromptSubmit<'_>) -> Option<PromptSubmitOutcome> {
-    let commands = hook_commands("user_prompt_submit");
+    let commands = hook_commands_for("user_prompt_submit", input.cwd);
     if commands.is_empty() {
         return None;
     }
@@ -116,7 +114,7 @@ pub async fn run_user_prompt_submit(input: &PromptSubmit<'_>) -> Option<PromptSu
     if let Some(cwd) = input.cwd {
         event = event.cwd(cwd);
     }
-    let results = super::run_json_commands(&commands, &event, &stdin, timeout(), |result| {
+    let results = super::run_json_commands(&commands, &event, &stdin, timeout_ms(), |result| {
         let verdict = interpret(result, "user_prompt_submit");
         verdict.block.is_some() || verdict.halt.is_some()
     })

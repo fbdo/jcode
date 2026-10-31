@@ -9,13 +9,12 @@
 //! model calls a tool, guarantees termination.
 
 use super::{
-    HookEvent, Verdict, common_payload, current_prompt_origin, hook_commands, interpret,
+    HookEvent, Verdict, common_payload, current_prompt_origin, hook_commands_for, interpret,
     jcode_object, swarm_identity, truncate_marked,
 };
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
-use std::time::Duration;
 
 const DEFAULT_TIMEOUT_MS: u64 = 10_000;
 const MAX_TIMEOUT_MS: u64 = 600_000;
@@ -109,20 +108,19 @@ pub fn stop_payload(input: &StopInput<'_>, continuations: u32) -> Value {
     Value::Object(payload)
 }
 
-fn timeout() -> Duration {
+fn timeout_ms() -> u64 {
     let configured = crate::config::config().hooks.stop_timeout_ms;
-    let ms = if configured == 0 {
+    if configured == 0 {
         DEFAULT_TIMEOUT_MS
     } else {
         configured.min(MAX_TIMEOUT_MS)
-    };
-    Duration::from_millis(ms)
+    }
 }
 
 /// Run the `stop` hook. `None` means no hook is configured. Counts a
 /// continuation when one is granted.
 pub async fn run_stop_hook(input: &StopInput<'_>) -> Option<StopOutcome> {
-    let commands = hook_commands("stop");
+    let commands = hook_commands_for("stop", input.cwd);
     if commands.is_empty() {
         return None;
     }
@@ -136,7 +134,7 @@ pub async fn run_stop_hook(input: &StopInput<'_>) -> Option<StopOutcome> {
     if let Some(cwd) = input.cwd {
         event = event.cwd(cwd);
     }
-    let results = super::run_json_commands(&commands, &event, &stdin, timeout(), |result| {
+    let results = super::run_json_commands(&commands, &event, &stdin, timeout_ms(), |result| {
         let verdict = interpret(result, "stop");
         verdict.halt.is_some() || verdict.block.is_some() || verdict.additional_context.is_some()
     })

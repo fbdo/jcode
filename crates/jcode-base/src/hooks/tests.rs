@@ -497,6 +497,7 @@ fn observer_with_swarm_identity_gets_env_payload_and_stdin_json() {
             parent_session_id: "coord1".into(),
             label: Some("task".into()),
             agent_type: Some("reviewer".into()),
+            working_dir: None,
         },
     );
     let prev = std::env::var_os("JCODE_HOOK_TURN_END");

@@ -49,18 +49,22 @@ pub(super) async fn run_json_command(
 }
 
 /// Run `commands` in order with the same stdin, collecting each result.
+/// Each command runs with its own provenance (project commands get their
+/// project directory and a clamped timeout) and `global_timeout_ms` otherwise.
 /// `stop_after` can end the run early (used for "first continue wins").
 /// Failed commands fail open and contribute no result.
 pub async fn run_json_commands(
-    commands: &[String],
+    commands: &[super::ScopedCommand],
     event: &HookEvent,
     stdin_json: &str,
-    timeout: Duration,
+    global_timeout_ms: u64,
     mut stop_after: impl FnMut(&CommandResult) -> bool,
 ) -> Vec<CommandResult> {
     let mut results = Vec::new();
-    for command in commands {
-        if let Some(result) = run_json_command(command, event, stdin_json, timeout).await {
+    for scoped in commands {
+        let event = event.clone().with_scope(&scoped.scope);
+        let timeout = Duration::from_millis(scoped.effective_timeout_ms(global_timeout_ms).max(1));
+        if let Some(result) = run_json_command(&scoped.command, &event, stdin_json, timeout).await {
             let done = stop_after(&result);
             results.push(result);
             if done {
