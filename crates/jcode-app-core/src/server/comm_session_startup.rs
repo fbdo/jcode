@@ -1,7 +1,5 @@
 //! Helpers for the headed startup handoff of visible swarm workers.
 
-use super::*;
-
 pub(super) fn persist_headed_startup_message(session_id: &str, message: &str) {
     crate::logging::info(&format!(
         "Headed spawn: persisting startup submission for {session_id} (chars={}) to client-input handoff file",

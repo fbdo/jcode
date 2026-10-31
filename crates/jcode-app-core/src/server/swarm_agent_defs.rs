@@ -9,6 +9,13 @@ use crate::agent_def::{AgentDefinition, find_agent_definition, load_agent_defini
 use anyhow::Result;
 use std::path::Path;
 
+/// The server's live sessions, keyed by session id.
+type LiveSessions = std::sync::Arc<
+    tokio::sync::RwLock<
+        std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<crate::agent::Agent>>>,
+    >,
+>;
+
 /// Resolve the requested definition, or `Ok(None)` when none was requested.
 /// An unknown name is an error listing the valid ones.
 pub(super) fn resolve(
@@ -48,14 +55,7 @@ pub(super) fn persona_text(definition: &AgentDefinition) -> String {
 /// A worker that has just been created, ready to have its definition applied
 /// and its swarm identity registered.
 pub(super) struct StartedWorker<'a> {
-    pub sessions: &'a std::sync::Arc<
-        tokio::sync::RwLock<
-            std::collections::HashMap<
-                String,
-                std::sync::Arc<tokio::sync::Mutex<crate::agent::Agent>>,
-            >,
-        >,
-    >,
+    pub sessions: &'a LiveSessions,
     pub session_id: &'a str,
     pub swarm_id: &'a str,
     pub coordinator_session_id: &'a str,
@@ -91,14 +91,7 @@ impl StartedWorker<'_> {
 /// Apply a definition to a freshly created headless worker: deliver the
 /// persona and narrow the tool surface to the definition's policy.
 pub(super) async fn apply_to_headless_worker(
-    sessions: &std::sync::Arc<
-        tokio::sync::RwLock<
-            std::collections::HashMap<
-                String,
-                std::sync::Arc<tokio::sync::Mutex<crate::agent::Agent>>,
-            >,
-        >,
-    >,
+    sessions: &LiveSessions,
     session_id: &str,
     definition: Option<&AgentDefinition>,
     policy: &super::swarm_agent_policy::AppliedPolicy,

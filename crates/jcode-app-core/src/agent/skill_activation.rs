@@ -30,12 +30,6 @@ impl Agent {
         self.announce_active_skill_with(arguments);
     }
 
-    /// Record the newly active skill's instructions as a hidden transcript
-    /// message. The system prompt stays byte-identical across skill changes.
-    pub(crate) fn announce_active_skill(&mut self) {
-        self.announce_active_skill_with(None);
-    }
-
     /// Announce the active skill with `$ARGUMENTS` substituted. The same
     /// rendered text is never announced twice in a row, so re-invoking a skill
     /// with identical arguments adds nothing while different arguments append

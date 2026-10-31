@@ -537,10 +537,7 @@ mod startup_handoff;
 pub(super) use spawn_policy::{
     is_inherit_sentinel, resolve_swarm_spawn_effort, resolve_swarm_spawn_mode,
 };
-use startup_handoff::{
-    cleanup_prepared_visible_spawn_session, clear_headed_startup_message,
-    persist_headed_startup_message,
-};
+use startup_handoff::{cleanup_prepared_visible_spawn_session, persist_headed_startup_message};
 #[expect(
     clippy::too_many_arguments,
     reason = "server-side swarm spawning needs session, swarm state, provider, and event sinks together"

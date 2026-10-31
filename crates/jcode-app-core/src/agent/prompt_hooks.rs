@@ -5,7 +5,6 @@ use crate::hooks::{PromptOrigin, PromptSubmit, PromptSubmitOutcome};
 pub(super) struct PromptHookDecision {
     /// Hidden context to append after the user message.
     pub context: Option<String>,
-    pub origin: PromptOrigin,
 }
 
 impl Agent {
@@ -23,10 +22,7 @@ impl Agent {
     ) -> Result<PromptHookDecision> {
         crate::hooks::reset_stop_continuations(&self.session.id);
         let origin = crate::hooks::begin_turn_origin(&self.session.id, default_origin);
-        let mut decision = PromptHookDecision {
-            context: None,
-            origin,
-        };
+        let mut decision = PromptHookDecision { context: None };
         if !crate::hooks::hook_configured_for("user_prompt_submit", self.working_dir()) {
             return Ok(decision);
         }
