@@ -10,8 +10,8 @@ use tokio::sync::RwLock;
 
 mod arguments;
 mod invocation;
-mod precedence;
 mod list_value;
+mod precedence;
 pub use invocation::SkillInvocation;
 use list_value::ListValue;
 
