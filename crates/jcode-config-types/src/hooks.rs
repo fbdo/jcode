@@ -147,6 +147,14 @@ pub struct HooksConfig {
     /// a tool (default 8). Zero disables continuing. Env override:
     /// JCODE_HOOK_STOP_MAX_CONTINUATIONS.
     pub stop_max_continuations: u32,
+    /// Whether `[hooks]` in a trusted project `.jcode/config.toml` is honoured
+    /// (default true). Set false in the global config, or set
+    /// JCODE_PROJECT_HOOKS=0, to disable every project hook.
+    pub project_hooks: bool,
+    /// Upper bound, in milliseconds, for any timeout a project hook runs with
+    /// (default 120000). A project may set its own `<event>_timeout_ms`, but
+    /// the value is clamped to this cap. Only the global config sets it.
+    pub project_timeout_cap_ms: u64,
 }
 
 impl Default for HooksConfig {
@@ -170,6 +178,8 @@ impl Default for HooksConfig {
             stop: None,
             stop_timeout_ms: 10_000,
             stop_max_continuations: 8,
+            project_hooks: true,
+            project_timeout_cap_ms: 120_000,
         }
     }
 }

@@ -6,6 +6,7 @@
 
 /// Capability tokens, kept sorted so the output is stable.
 const TOKENS: &[&str] = &[
+    "project_hooks",
     "project_trust",
     "prompt_origin",
     "skill_arguments",
