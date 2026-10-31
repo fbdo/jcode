@@ -17,6 +17,7 @@ mod provider;
 mod response_recovery;
 mod skill_activation;
 mod status;
+mod stop_hook;
 mod streaming;
 #[cfg(test)]
 mod swarm_reminder_tests;

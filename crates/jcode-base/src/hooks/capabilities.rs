@@ -9,6 +9,7 @@ const TOKENS: &[&str] = &[
     "prompt_origin",
     "skill_arguments",
     "skill_precedence_jcode",
+    "stop",
     "swarm_identity",
     "swarm_member_events",
     "user_prompt_submit",
