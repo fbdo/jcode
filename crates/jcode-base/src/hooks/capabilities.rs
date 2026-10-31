@@ -8,6 +8,8 @@
 const TOKENS: &[&str] = &[
     "skill_arguments",
     "skill_precedence_jcode",
+    "swarm_identity",
+    "swarm_member_events",
 ];
 
 /// Sorted, de-duplicated capability tokens supported by this build.

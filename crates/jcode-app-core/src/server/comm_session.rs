@@ -684,10 +684,13 @@ pub(super) async fn spawn_swarm_agent(
                 }
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
-                let context = crate::session_launch::SessionSpawnContext::kind("swarm-agent")
+                let mut context = crate::session_launch::SessionSpawnContext::kind("swarm-agent")
                     .env("JCODE_SPAWN_SWARM_ID", swarm_id)
-                    .env("JCODE_SPAWN_COORDINATOR_SESSION_ID", req_session_id)
-                    .with_client_terminal_env(client_terminal_env.clone());
+                    .env("JCODE_SPAWN_COORDINATOR_SESSION_ID", req_session_id);
+                if let Some(label) = label.as_deref() {
+                    context = context.env("JCODE_SPAWN_SWARM_LABEL", label);
+                }
+                let context = context.with_client_terminal_env(client_terminal_env.clone());
                 spawn_visible_session_window_with_context(
                     session_id,
                     cwd,
@@ -789,6 +792,19 @@ pub(super) async fn spawn_swarm_agent(
     if let Some(label_text) = label.as_deref().or(initial_message.as_deref()) {
         set_member_task_label(&new_session_id, label_text, swarm_members).await;
     }
+    super::swarm_hooks::worker_spawned(&super::swarm_hooks::SpawnedWorker {
+        session_id: &new_session_id,
+        swarm_id,
+        coordinator_session_id: req_session_id,
+        label: label.as_deref(),
+        agent_type: None,
+        spawn_mode: if is_headless_fallback {
+            "headless"
+        } else {
+            "visible"
+        },
+        working_dir: resolved_working_dir.as_deref(),
+    });
     let swarm_state = SwarmState {
         members: Arc::clone(swarm_members),
         swarms_by_id: Arc::clone(swarms_by_id),
