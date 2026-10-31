@@ -45,9 +45,52 @@ pub(super) fn persona_text(definition: &AgentDefinition) -> String {
     )
 }
 
-/// Add the persona to a freshly created headless worker, if a definition was
-/// requested.
-pub(super) async fn deliver_headless_persona(
+/// A worker that has just been created, ready to have its definition applied
+/// and its swarm identity registered.
+pub(super) struct StartedWorker<'a> {
+    pub sessions: &'a std::sync::Arc<
+        tokio::sync::RwLock<
+            std::collections::HashMap<
+                String,
+                std::sync::Arc<tokio::sync::Mutex<crate::agent::Agent>>,
+            >,
+        >,
+    >,
+    pub session_id: &'a str,
+    pub swarm_id: &'a str,
+    pub coordinator_session_id: &'a str,
+    pub label: Option<&'a str>,
+    pub headless: bool,
+    pub working_dir: Option<&'a str>,
+}
+
+impl StartedWorker<'_> {
+    /// Apply the definition (headless only: visible workers got their persona
+    /// before launch), then register the worker's identity and fire
+    /// `swarm_member_start`.
+    pub(super) async fn finish(
+        &self,
+        definition: Option<&AgentDefinition>,
+        policy: &super::swarm_agent_policy::AppliedPolicy,
+    ) {
+        if self.headless {
+            apply_to_headless_worker(self.sessions, self.session_id, definition, policy).await;
+        }
+        super::swarm_hooks::worker_spawned(&super::swarm_hooks::SpawnedWorker::new(
+            self.session_id,
+            self.swarm_id,
+            self.coordinator_session_id,
+            self.label,
+            definition.map(|d| d.name.as_str()),
+            if self.headless { "headless" } else { "visible" },
+            self.working_dir,
+        ));
+    }
+}
+
+/// Apply a definition to a freshly created headless worker: deliver the
+/// persona and narrow the tool surface to the definition's policy.
+pub(super) async fn apply_to_headless_worker(
     sessions: &std::sync::Arc<
         tokio::sync::RwLock<
             std::collections::HashMap<
@@ -58,16 +101,21 @@ pub(super) async fn deliver_headless_persona(
     >,
     session_id: &str,
     definition: Option<&AgentDefinition>,
+    policy: &super::swarm_agent_policy::AppliedPolicy,
 ) {
     let Some(definition) = definition else {
         return;
     };
     let agent = sessions.read().await.get(session_id).cloned();
-    if let Some(agent) = agent {
+    let Some(agent) = agent else {
+        return;
+    };
+    let mut agent = agent.lock().await;
+    agent.add_persona_message(&persona_text(definition));
+    if policy.tools.is_some() || !policy.disallowed_tools.is_empty() {
         agent
-            .lock()
-            .await
-            .add_persona_message(&persona_text(definition));
+            .narrow_tools(policy.tools.as_deref(), &policy.disallowed_tools)
+            .await;
     }
 }
 
