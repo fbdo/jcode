@@ -65,6 +65,7 @@ mod runtime_upgrade;
 mod socket;
 mod swarm;
 mod swarm_agent_defs;
+mod swarm_agent_policy;
 mod swarm_channels;
 mod swarm_hooks;
 mod swarm_labels;

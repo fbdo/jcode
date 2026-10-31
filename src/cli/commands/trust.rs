@@ -28,6 +28,9 @@ fn scope_reviews(path: &Path) -> Result<Vec<ScopeReview>> {
     if let Some(review) = crate::hooks::hooks_scope_review(path)? {
         reviews.push(review);
     }
+    if let Some(review) = crate::agent_def::agents_scope_review(path) {
+        reviews.push(review);
+    }
     if let Some(review) = crate::mcp::mcp_scope_review(path)? {
         reviews.push(review);
     }
