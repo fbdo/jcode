@@ -398,43 +398,6 @@ fn resolve_swarm_spawn_selection(
     }
 }
 
-fn persist_headed_startup_message(session_id: &str, message: &str) {
-    crate::logging::info(&format!(
-        "Headed spawn: persisting startup submission for {session_id} (chars={}) to client-input handoff file",
-        message.chars().count(),
-    ));
-    crate::client_input::save_startup_submission_for_session(
-        session_id,
-        message.to_string(),
-        Vec::new(),
-    );
-}
-
-fn clear_headed_startup_message(session_id: &str) {
-    if let Ok(jcode_dir) = crate::storage::jcode_dir() {
-        let path = jcode_dir.join(format!("client-input-{}", session_id));
-        if let Err(error) = std::fs::remove_file(&path)
-            && error.kind() != std::io::ErrorKind::NotFound
-        {
-            crate::logging::warn(&format!(
-                "Unable to remove prepared spawn file {}: {error}",
-                path.display()
-            ));
-        }
-    }
-}
-
-fn cleanup_prepared_visible_spawn_session(session_id: &str) {
-    crate::session_env::remove_session_env(session_id);
-    clear_headed_startup_message(session_id);
-    if let Ok(path) = crate::session::session_path(session_id) {
-        let _ = std::fs::remove_file(path);
-    }
-    if let Ok(path) = crate::session::session_journal_path(session_id) {
-        let _ = std::fs::remove_file(path);
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 fn prepare_visible_spawn_session<F>(
     working_dir: Option<&str>,
@@ -569,8 +532,14 @@ async fn register_visible_spawned_member(
 #[path = "spawn_policy.rs"]
 mod spawn_policy;
 use spawn_policy::inherit_coordinator_selection;
+#[path = "comm_session_startup.rs"]
+mod startup_handoff;
 pub(super) use spawn_policy::{
     is_inherit_sentinel, resolve_swarm_spawn_effort, resolve_swarm_spawn_mode,
+};
+use startup_handoff::{
+    cleanup_prepared_visible_spawn_session, clear_headed_startup_message,
+    persist_headed_startup_message,
 };
 #[expect(
     clippy::too_many_arguments,
@@ -586,6 +555,7 @@ pub(super) async fn spawn_swarm_agent(
     requested_model: Option<String>,
     requested_effort: Option<String>,
     label: Option<String>,
+    agent: Option<String>,
     sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
     provider_template: &Arc<dyn Provider>,
@@ -606,6 +576,8 @@ pub(super) async fn spawn_swarm_agent(
         .map_err(anyhow::Error::msg)?;
     let resolved_working_dir =
         resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
+    let definition =
+        super::swarm_agent_defs::resolve(agent.as_deref(), resolved_working_dir.as_deref())?;
     let coordinator = resolve_coordinator_spawn_identity(req_session_id, sessions).await;
     let coordinator_is_canary = coordinator.is_canary;
     // Capture the requesting client's terminal env so spawn hooks place the new
@@ -670,6 +642,9 @@ pub(super) async fn spawn_swarm_agent(
             startup_message.as_deref(),
             |session_id, cwd, selfdev_requested, provider_key| {
                 crate::session_env::inherit_session_env(req_session_id, session_id);
+                if let Some(definition) = definition.as_ref() {
+                    super::swarm_agent_defs::persist_persona(session_id, definition);
+                }
                 if let Some(lane_id) = lane_id.as_deref() {
                     let brief = super::swarm_todo_link::seed_spawn_lane(
                         req_session_id,
@@ -684,13 +659,9 @@ pub(super) async fn spawn_swarm_agent(
                 }
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
-                let mut context = crate::session_launch::SessionSpawnContext::kind("swarm-agent")
-                    .env("JCODE_SPAWN_SWARM_ID", swarm_id)
-                    .env("JCODE_SPAWN_COORDINATOR_SESSION_ID", req_session_id);
-                if let Some(label) = label.as_deref() {
-                    context = context.env("JCODE_SPAWN_SWARM_LABEL", label);
-                }
-                let context = context.with_client_terminal_env(client_terminal_env.clone());
+                let context =
+                    super::swarm_hooks::spawn_context(swarm_id, req_session_id, label.as_deref())
+                        .with_client_terminal_env(client_terminal_env.clone());
                 spawn_visible_session_window_with_context(
                     session_id,
                     cwd,
@@ -753,6 +724,14 @@ pub(super) async fn spawn_swarm_agent(
             &brief,
         ));
     }
+    if is_headless_fallback {
+        super::swarm_agent_defs::deliver_headless_persona(
+            sessions,
+            &new_session_id,
+            definition.as_ref(),
+        )
+        .await;
+    }
     {
         let mut plans = swarm_plans.write().await;
         if let Some(plan) = plans.get_mut(swarm_id)
@@ -792,19 +771,19 @@ pub(super) async fn spawn_swarm_agent(
     if let Some(label_text) = label.as_deref().or(initial_message.as_deref()) {
         set_member_task_label(&new_session_id, label_text, swarm_members).await;
     }
-    super::swarm_hooks::worker_spawned(&super::swarm_hooks::SpawnedWorker {
-        session_id: &new_session_id,
+    super::swarm_hooks::worker_spawned(&super::swarm_hooks::SpawnedWorker::new(
+        &new_session_id,
         swarm_id,
-        coordinator_session_id: req_session_id,
-        label: label.as_deref(),
-        agent_type: None,
-        spawn_mode: if is_headless_fallback {
+        req_session_id,
+        label.as_deref(),
+        definition.as_ref().map(|d| d.name.as_str()),
+        if is_headless_fallback {
             "headless"
         } else {
             "visible"
         },
-        working_dir: resolved_working_dir.as_deref(),
-    });
+        resolved_working_dir.as_deref(),
+    ));
     let swarm_state = SwarmState {
         members: Arc::clone(swarm_members),
         swarms_by_id: Arc::clone(swarms_by_id),
@@ -906,6 +885,7 @@ pub(super) async fn handle_comm_spawn(
     model: Option<String>,
     effort: Option<String>,
     label: Option<String>,
+    agent: Option<String>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
     sessions: &SessionAgents,
     global_session_id: &Arc<RwLock<String>>,
@@ -966,6 +946,7 @@ pub(super) async fn handle_comm_spawn(
             effort.clone().unwrap_or_default(),
             model.clone().unwrap_or_default(),
             label.clone().unwrap_or_default(),
+            agent.clone().unwrap_or_default(),
         ],
     );
     let Some(mutation_state) = begin_or_replay(
@@ -991,6 +972,7 @@ pub(super) async fn handle_comm_spawn(
         model,
         effort,
         label,
+        agent,
         sessions,
         global_session_id,
         provider_template,
