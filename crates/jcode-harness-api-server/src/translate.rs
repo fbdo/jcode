@@ -673,6 +673,7 @@ impl BridgeState {
                     "type": "message",
                     "id": id,
                     "content": request["content"].as_str().unwrap_or(""),
+                    "origin": "sdk",
                 });
                 if no_reply {
                     message["no_reply"] = json!(true);

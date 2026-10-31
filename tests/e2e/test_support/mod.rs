@@ -399,6 +399,7 @@ impl WsTestClient {
             system_reminder: None,
             active_skill: None,
             skill_arguments: None,
+            origin: None,
             no_reply: false,
         })
         .await

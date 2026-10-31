@@ -88,6 +88,7 @@ struct ProcessingMessage {
     system_reminder: Option<String>,
     active_skill: Option<String>,
     skill_arguments: Option<String>,
+    origin: Option<String>,
     /// Retry on the next pool account after a usage limit (API clients).
     server_failover: bool,
 }
@@ -1044,6 +1045,7 @@ pub(super) async fn handle_client(
                 system_reminder,
                 active_skill,
                 skill_arguments,
+                origin,
                 no_reply,
             } => {
                 if no_reply {
@@ -1081,6 +1083,7 @@ pub(super) async fn handle_client(
                         system_reminder,
                         active_skill,
                         skill_arguments,
+                        origin,
                         server_failover: supports_server_failover,
                     },
                     &client_session_id,
@@ -1202,6 +1205,7 @@ pub(super) async fn handle_client(
                             system_reminder: None,
                             active_skill: None,
                             skill_arguments: None,
+                            origin: None,
                             server_failover: supports_server_failover,
                         },
                         &client_session_id,
@@ -3399,6 +3403,7 @@ async fn start_processing_message(
         system_reminder,
         active_skill,
         skill_arguments,
+        origin,
         server_failover,
     } = message;
     if server_reload_starting() {
@@ -3460,6 +3465,12 @@ async fn start_processing_message(
             "Failed to mark reload recovery intent delivered for accepted message session={} id={}: {}",
             client_session_id, id, error
         ));
+    }
+    if let Some(origin) = origin
+        .as_deref()
+        .and_then(crate::hooks::PromptOrigin::parse)
+    {
+        crate::hooks::set_pending_prompt_origin(client_session_id, origin);
     }
     drop(agent_guard);
 

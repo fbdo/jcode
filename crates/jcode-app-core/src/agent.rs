@@ -11,6 +11,7 @@ mod interrupts;
 mod messages;
 #[cfg(test)]
 mod model_usage_tests;
+mod prompt_hooks;
 mod prompting;
 mod provider;
 mod response_recovery;

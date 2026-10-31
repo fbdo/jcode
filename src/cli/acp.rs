@@ -1100,6 +1100,7 @@ impl AcpRuntime {
                 system_reminder: None,
                 active_skill,
                 skill_arguments,
+                origin: None,
                 no_reply: false,
             })
             .await;

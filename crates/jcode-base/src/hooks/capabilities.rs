@@ -6,10 +6,12 @@
 
 /// Capability tokens, kept sorted so the output is stable.
 const TOKENS: &[&str] = &[
+    "prompt_origin",
     "skill_arguments",
     "skill_precedence_jcode",
     "swarm_identity",
     "swarm_member_events",
+    "user_prompt_submit",
 ];
 
 /// Sorted, de-duplicated capability tokens supported by this build.

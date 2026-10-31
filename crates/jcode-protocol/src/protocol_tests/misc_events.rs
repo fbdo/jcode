@@ -571,6 +571,7 @@ fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Resu
         system_reminder: Some("be concise".to_string()),
         active_skill: Some("verification".to_string()),
         skill_arguments: None,
+        origin: None,
         no_reply: true,
     };
     let json = serde_json::to_string(&req)?;
@@ -582,6 +583,7 @@ fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Resu
         system_reminder,
         active_skill,
         skill_arguments: _,
+        origin: _,
         no_reply,
     } = decoded
     else {
@@ -766,6 +768,7 @@ fn test_message_request_skill_arguments_roundtrip_and_legacy_default() -> Result
         system_reminder: None,
         active_skill: Some("triage".to_string()),
         skill_arguments: Some("42 jcode".to_string()),
+        origin: None,
         no_reply: false,
     })?;
     assert!(json.contains("\"skill_arguments\":\"42 jcode\""));
@@ -773,5 +776,30 @@ fn test_message_request_skill_arguments_roundtrip_and_legacy_default() -> Result
         return Err(anyhow!("expected Message"));
     };
     assert_eq!(skill_arguments.as_deref(), Some("42 jcode"));
+    Ok(())
+}
+
+#[test]
+fn test_message_request_origin_roundtrip_and_legacy_default() -> Result<()> {
+    let legacy = parse_request_json(r#"{"type":"message","id":1,"content":"x"}"#)?;
+    let Request::Message { origin, .. } = legacy else {
+        return Err(anyhow!("expected Message"));
+    };
+    assert_eq!(origin, None);
+    let json = serde_json::to_string(&Request::Message {
+        id: 2,
+        content: "x".to_string(),
+        images: vec![],
+        system_reminder: None,
+        active_skill: None,
+        skill_arguments: None,
+        origin: Some("auto".to_string()),
+        no_reply: false,
+    })?;
+    assert!(json.contains("\"origin\":\"auto\""));
+    let Request::Message { origin, .. } = parse_request_json(&json)? else {
+        return Err(anyhow!("expected Message"));
+    };
+    assert_eq!(origin.as_deref(), Some("auto"));
     Ok(())
 }

@@ -31,6 +31,8 @@ mod mcp_remote_cache;
 
 #[path = "agent_tests/skill_arguments.rs"]
 mod skill_arguments;
+#[path = "agent_tests/prompt_hook.rs"]
+mod prompt_hook;
 
 struct DelayedProvider {
     open_delay: Duration,
