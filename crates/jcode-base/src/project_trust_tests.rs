@@ -106,6 +106,12 @@ fn linked_worktree(main: &Path) -> tempfile::TempDir {
         format!("gitdir: {}\n", admin.display()),
     )
     .unwrap();
+    // Real git records the worktree's `.git` file in the admin directory.
+    std::fs::write(
+        admin.join("gitdir"),
+        format!("{}\n", worktree.path().join(".git").display()),
+    )
+    .unwrap();
     worktree
 }
 
@@ -125,6 +131,79 @@ fn linked_worktree_keys_on_main_checkout_but_digest_must_match() {
     assert_eq!(
         trust_state(worktree.path(), Scope::Hooks, "sha256:edited").unwrap(),
         TrustState::Changed
+    );
+}
+
+#[test]
+fn forged_worktree_pointer_does_not_inherit_the_main_checkouts_approval() {
+    let _lock = crate::storage::lock_test_env();
+    let (_home, _env) = home();
+    let main = git_repo();
+    let _real = linked_worktree(main.path());
+    grant(main.path(), Scope::Hooks, "sha256:same").unwrap();
+
+    // An unrelated directory whose `.git` file points at the real admin dir
+    // that the main checkout never registered for it.
+    let forged = tempfile::tempdir().unwrap();
+    std::fs::write(
+        forged.path().join(".git"),
+        format!(
+            "gitdir: {}\n",
+            main.path().join(".git/worktrees/wt").display()
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        project_root(forged.path()).unwrap(),
+        std::fs::canonicalize(forged.path()).unwrap()
+    );
+    assert!(!is_trusted(forged.path(), Scope::Hooks, "sha256:same"));
+}
+
+#[test]
+fn a_corrupt_store_never_resurrects_a_revoked_approval_from_the_backup() {
+    let _lock = crate::storage::lock_test_env();
+    let (_home, _env) = home();
+    let project = git_repo();
+    grant(project.path(), Scope::Hooks, "sha256:a").unwrap();
+    // The second save leaves the first (approved) state in the .bak file.
+    grant(project.path(), Scope::Mcp, "sha256:m").unwrap();
+    revoke(project.path(), Some(Scope::Hooks)).unwrap();
+    let path = store_path();
+    std::fs::write(&path, "{ not json").unwrap();
+    assert!(!is_trusted(project.path(), Scope::Hooks, "sha256:a"));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "{ not json");
+}
+
+#[test]
+fn concurrent_grants_and_revokes_do_not_lose_updates() {
+    let _lock = crate::storage::lock_test_env();
+    let (_home, _env) = home();
+    let keep = git_repo();
+    let drop = git_repo();
+    grant(drop.path(), Scope::Hooks, "sha256:d").unwrap();
+    let keep_path = keep.path().to_path_buf();
+    let drop_path = drop.path().to_path_buf();
+    let threads: Vec<_> = (0..8)
+        .map(|i| {
+            let keep_path = keep_path.clone();
+            let drop_path = drop_path.clone();
+            std::thread::spawn(move || {
+                if i == 0 {
+                    revoke(&drop_path, Some(Scope::Hooks)).unwrap();
+                } else {
+                    grant(&keep_path, Scope::Hooks, "sha256:k").unwrap();
+                }
+            })
+        })
+        .collect();
+    for thread in threads {
+        thread.join().unwrap();
+    }
+    assert!(is_trusted(keep.path(), Scope::Hooks, "sha256:k"));
+    assert!(
+        !is_trusted(drop.path(), Scope::Hooks, "sha256:d"),
+        "a concurrent grant must not restore a revoked approval"
     );
 }
 

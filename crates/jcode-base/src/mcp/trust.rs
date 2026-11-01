@@ -140,6 +140,21 @@ pub fn revoke_project_mcp(project_root: &Path) -> Result<bool> {
     crate::project_trust::revoke(project_root, Some(crate::project_trust::Scope::Mcp))
 }
 
+fn key_looks_secret(key: &str) -> bool {
+    let key = key.to_ascii_uppercase();
+    [
+        "KEY",
+        "TOKEN",
+        "SECRET",
+        "PASSWORD",
+        "PASSWD",
+        "CREDENTIAL",
+        "AUTH",
+    ]
+    .iter()
+    .any(|word| key.contains(word))
+}
+
 /// What the `mcp` scope would let `path`'s project run, for `jcode trust`.
 pub fn mcp_scope_review(path: &Path) -> Result<Option<crate::project_trust::ScopeReview>> {
     let Some(review) = project_mcp_review(path)? else {
@@ -164,7 +179,12 @@ pub fn mcp_scope_review(path: &Path) -> Result<Option<crate::project_trust::Scop
             lines.push("    environment:".to_string());
             for (key, value) in &server.env {
                 let assignment = format!("{key}={value}");
-                let shown = crate::message::redact_secrets(&assignment);
+                let mut shown = crate::message::redact_secrets(&assignment);
+                // Opaque values under bare names (`TOKEN`, `PASSWORD`, ...)
+                // have no recognisable shape, so also judge by the key.
+                if shown == assignment && key_looks_secret(key) {
+                    shown = format!("{key}=[redacted]");
+                }
                 redacted |= shown != assignment;
                 lines.push(format!("      - {:?}", safe(&shown)));
             }
@@ -401,5 +421,34 @@ mod shared_store_tests {
         assert!(review.lines.iter().any(|l| l.contains("tool")));
         assert!(review.redacted);
         assert!(review.digest.starts_with("sha256:"));
+    }
+
+    #[test]
+    fn opaque_values_under_secret_looking_names_are_redacted() {
+        let _lock = crate::storage::lock_test_env();
+        let home = tempfile::tempdir().unwrap();
+        let previous = std::env::var_os("JCODE_HOME");
+        crate::env::set_var("JCODE_HOME", home.path());
+        let project = tempfile::tempdir().unwrap();
+        std::fs::write(
+            project.path().join(".mcp.json"),
+            r#"{"mcpServers":{"t":{"command":"tool","env":{"TOKEN":"opaque-value-1","PASSWORD":"hunter2","MODE":"fast"}}}}"#,
+        )
+        .unwrap();
+        let review = mcp_scope_review(project.path()).unwrap().unwrap();
+        match previous {
+            Some(value) => crate::env::set_var("JCODE_HOME", value),
+            None => crate::env::remove_var("JCODE_HOME"),
+        }
+        let shown = review.lines.join("\n");
+        assert!(
+            !shown.contains("opaque-value-1") && !shown.contains("hunter2"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("MODE=fast"),
+            "non-secret values stay visible: {shown}"
+        );
+        assert!(review.redacted);
     }
 }

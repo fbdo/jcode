@@ -120,7 +120,13 @@ fn load() -> Loaded {
             ..Store::default()
         });
     }
-    match crate::storage::read_json::<Store>(&path) {
+    // Read the primary file only. `storage::read_json` would restore the
+    // `.bak` copy over a corrupt file, which can resurrect an approval that was
+    // revoked after that backup was taken. A corrupt store trusts nothing.
+    match std::fs::read_to_string(&path)
+        .map_err(anyhow::Error::from)
+        .and_then(|text| serde_json::from_str::<Store>(&text).map_err(anyhow::Error::from))
+    {
         Ok(store) if store.version == STORE_VERSION => Loaded::Ok(store),
         Ok(store) => Loaded::Unusable(format!(
             "project trust store version {} is unsupported",
@@ -151,6 +157,28 @@ fn load_for_write() -> Result<Store> {
         Loaded::Ok(store) => Ok(store),
         Loaded::Unusable(reason) => bail!("{reason}; refusing to overwrite it"),
     }
+}
+
+/// Serialize a whole load-modify-save of the store across threads and
+/// processes, so a stale writer cannot restore an approval another process
+/// just revoked.
+fn lock_store_file() -> Result<crate::auth::account_store::StoreLockGuard> {
+    let dir = crate::storage::durable_state_dir();
+    std::fs::create_dir_all(&dir)?;
+    #[cfg(unix)]
+    {
+        // The lock refuses a directory others can write to, which a loose
+        // umask would otherwise produce. The directory is ours, so tighten it.
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let metadata = std::fs::symlink_metadata(&dir)?;
+        if metadata.is_dir()
+            && metadata.mode() & 0o022 != 0
+            && metadata.uid() == unsafe { libc::geteuid() }
+        {
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))?;
+        }
+    }
+    crate::auth::account_store::lock_store(&dir, STORE_FILE)
 }
 
 fn save(store: &Store) -> Result<()> {
@@ -197,7 +225,25 @@ fn main_checkout_of(worktree: &Path, dot_git_file: &Path) -> Option<PathBuf> {
             worktree.join(raw)
         }
     };
-    let gitdir = std::fs::canonicalize(gitdir).ok()?;
+    let Ok(gitdir) = std::fs::canonicalize(gitdir) else {
+        return None;
+    };
+    // The worktree must be registered by the main checkout: its admin dir has
+    // to point back at this very `.git` file. Without this check any directory
+    // could forge a `.git` file aiming at an approved checkout and inherit its
+    // approvals.
+    let Ok(text) = std::fs::read_to_string(gitdir.join("gitdir")) else {
+        return None;
+    };
+    let (Ok(registered), Ok(this)) = (
+        std::fs::canonicalize(text.trim()),
+        std::fs::canonicalize(dot_git_file),
+    ) else {
+        return None;
+    };
+    if registered != this {
+        return None;
+    }
     let common = match std::fs::read_to_string(gitdir.join("commondir")) {
         Ok(text) => {
             let rel = text.trim();
@@ -276,6 +322,7 @@ pub fn is_trusted(path: &Path, scope: Scope, digest: &str) -> bool {
 /// Approve `digest` for `scope`. Other scopes are untouched.
 pub fn grant(path: &Path, scope: Scope, digest: &str) -> Result<PathBuf> {
     let root = project_root(path)?;
+    let _lock = lock_store_file()?;
     let mut store = load_for_write()?;
     store.projects.entry(key(&root)).or_default().insert(
         scope,
@@ -292,6 +339,7 @@ pub fn grant(path: &Path, scope: Scope, digest: &str) -> Result<PathBuf> {
 /// Returns whether anything was removed.
 pub fn revoke(path: &Path, scope: Option<Scope>) -> Result<bool> {
     let root = project_root(path)?;
+    let _lock = lock_store_file()?;
     let mut store = load_for_write()?;
     let project = key(&root);
     let Some(scopes) = store.projects.get_mut(&project) else {
