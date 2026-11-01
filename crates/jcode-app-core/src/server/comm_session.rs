@@ -424,8 +424,6 @@ where
 
     if let Some(message) = startup_message {
         persist_headed_startup_message(&new_session_id, message);
-        // The visible worker's TUI submits this saved text as its first turn
-        // without an origin; it is generated work, not a person's prompt.
         crate::hooks::set_pending_prompt_origin(
             &new_session_id,
             crate::hooks::PromptOrigin::SwarmSpawn,
@@ -579,9 +577,6 @@ pub(super) async fn spawn_swarm_agent(
         .map_err(anyhow::Error::msg)?;
     let resolved_working_dir =
         resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
-    // Definitions are looked up from the coordinator's own directory, not the
-    // worker's: sending a worker to another checkout must not change which
-    // persona the name refers to.
     let coordinator_dir =
         resolve_spawn_working_dir(None, req_session_id, sessions, swarm_members).await;
     let definition_dir = coordinator_dir.or_else(|| resolved_working_dir.clone());
@@ -600,7 +595,6 @@ pub(super) async fn spawn_swarm_agent(
     let (applied_policy, policy_request) = super::swarm_agent_policy::for_spawn(
         definition.as_ref(),
         agents_config,
-        // Trust is judged for the project the definition was read from.
         definition_dir.as_deref(),
         requested_model.clone(),
         requested_effort.clone(),

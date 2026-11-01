@@ -3371,7 +3371,6 @@ async fn append_context_message(
         );
         return;
     };
-    // Declared only once accepted, so a rejected request leaves no origin.
     crate::hooks::set_pending_prompt_origin_named(client_session_id, origin);
     let result = agent.append_user_context_message(content, images).await;
     let event = match result {
