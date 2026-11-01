@@ -12,12 +12,10 @@ repository**, and asks again when the files change.
 | Scope | What it covers | Where it comes from |
 | --- | --- | --- |
 | `mcp` | MCP servers that run a local command | `.jcode/mcp.json`, `.mcp.json`, `.claude/mcp.json` in the project |
-| `hooks` | the `[hooks]` table of the project | `.jcode/config.toml` (used by later changes) |
-| `agents` | `model`, `effort`, `tools` of project agent definitions | `.jcode/agents`, `.claude/agents` (used by later changes) |
+| `hooks` | the `[hooks]` table of the project | `.jcode/config.toml` |
+| `agents` | `model`, `effort`, `tools` of project agent definitions | `.jcode/agents`, `.claude/agents` |
 
-This change only gates `mcp`. The `hooks` and `agents` scopes are reserved here:
-until the changes that use them land, `trust grant --scope hooks|agents` has
-nothing to approve. Scopes are independent. Granting one never grants another. Not gated: skills,
+Scopes are independent. Granting one never grants another. Not gated: skills,
 `AGENTS.md`, prompt overlays, global config and global MCP. Remote (HTTP/SSE)
 MCP servers run no local command and are not gated.
 
