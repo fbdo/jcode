@@ -36,6 +36,7 @@ mod prompt_hook;
 #[path = "agent_tests/skill_arguments.rs"]
 mod skill_arguments;
 
+#[cfg(unix)]
 #[path = "agent_tests/stop_hook.rs"]
 mod stop_hook;
 

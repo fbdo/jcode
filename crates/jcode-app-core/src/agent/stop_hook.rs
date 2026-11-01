@@ -7,12 +7,24 @@ impl Agent {
     pub(super) async fn stop_hook_continues_mpsc(
         &mut self,
         last_assistant_message: &str,
+        stop_reason: &Option<String>,
         event_tx: &mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<bool> {
-        self.stop_hook_continues(last_assistant_message, |detail| {
+        self.stop_hook_continues(last_assistant_message, stop_reason, |detail| {
             let _ = event_tx.send(ServerEvent::StatusDetail { detail });
         })
         .await
+    }
+
+    /// [`Self::stop_hook_continues`] for non-streaming turns, which have no
+    /// client channel for the cap notice.
+    pub(in crate::agent) async fn stop_continues(
+        &mut self,
+        last_assistant_message: &str,
+        stop_reason: &Option<String>,
+    ) -> Result<bool> {
+        self.stop_hook_continues(last_assistant_message, stop_reason, |_| {})
+            .await
     }
 
     /// Run the `stop` hook for a turn that is about to end. Returns true when
@@ -21,14 +33,20 @@ impl Agent {
     /// turn. The continuation stays inside the same turn, so `turn_end` fires
     /// once and `user_prompt_submit` does not fire again.
     ///
+    /// A provider guardrail stop (`refusal`, `content_filter`, `safety`) ends
+    /// the turn without consulting the hook, so a blocking hook can never
+    /// push the model to retry past a refusal.
+    ///
     /// `notice` receives one user-visible line when the continuation cap
     /// overrides a request to continue.
     pub(super) async fn stop_hook_continues(
         &mut self,
         last_assistant_message: &str,
+        stop_reason: &Option<String>,
         notice: impl FnOnce(String),
     ) -> Result<bool> {
         if self.is_graceful_shutdown()
+            || Self::is_guardrail_stop_reason(stop_reason.as_deref())
             || !crate::hooks::hook_configured_for("stop", self.working_dir())
         {
             return Ok(false);
