@@ -1053,7 +1053,7 @@ pub(super) async fn handle_client(
                         id,
                         &content,
                         images,
-                        &client_session_id,
+                        (&client_session_id, origin.as_deref()),
                         client_is_processing,
                         &agent,
                         &client_event_tx,
@@ -3356,7 +3356,7 @@ async fn append_context_message(
     id: u64,
     content: &str,
     images: Vec<(String, String)>,
-    client_session_id: &str,
+    (client_session_id, origin): (&str, Option<&str>),
     client_is_processing: bool,
     agent: &Arc<Mutex<Agent>>,
     client_event_tx: &mpsc::UnboundedSender<ServerEvent>,
@@ -3371,7 +3371,8 @@ async fn append_context_message(
         );
         return;
     };
-    let result = agent.append_user_context_message(content, images);
+    crate::hooks::set_pending_prompt_origin_named(client_session_id, origin);
+    let result = agent.append_user_context_message(content, images).await;
     let event = match result {
         Ok(()) => ServerEvent::ContextMessageAdded { id },
         Err(error) => ServerEvent::Error {

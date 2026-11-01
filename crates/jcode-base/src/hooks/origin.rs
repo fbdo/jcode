@@ -96,6 +96,13 @@ pub fn set_pending_prompt_origin(session_id: &str, origin: PromptOrigin) {
         .pending = Some(origin);
 }
 
+/// [`set_pending_prompt_origin`] from a wire name; unknown or absent names change nothing.
+pub fn set_pending_prompt_origin_named(session_id: &str, name: Option<&str>) {
+    if let Some(origin) = name.and_then(PromptOrigin::parse) {
+        set_pending_prompt_origin(session_id, origin);
+    }
+}
+
 /// Start a turn: take the pending origin (else `default`) and remember it as
 /// the turn's origin for later hooks (`turn_start`, `stop`).
 pub fn begin_turn_origin(session_id: &str, default: PromptOrigin) -> PromptOrigin {

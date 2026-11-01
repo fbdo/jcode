@@ -29,11 +29,14 @@ mod compile_remote;
 #[path = "agent_tests/mcp_remote_cache.rs"]
 mod mcp_remote_cache;
 
+// Shell-script hooks need Unix permissions and `sh`.
+#[cfg(unix)]
 #[path = "agent_tests/prompt_hook.rs"]
 mod prompt_hook;
 #[path = "agent_tests/skill_arguments.rs"]
 mod skill_arguments;
 
+#[cfg(unix)]
 #[path = "agent_tests/stop_hook.rs"]
 mod stop_hook;
 

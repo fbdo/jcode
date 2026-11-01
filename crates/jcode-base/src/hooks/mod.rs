@@ -417,10 +417,11 @@ pub use json_output::{CommandResult, Verdict, interpret};
 pub use json_runner::run_json_commands;
 pub use origin::{
     PromptOrigin, begin_turn_origin, current_prompt_origin, forget_prompt_origin,
-    set_pending_prompt_origin,
+    set_pending_prompt_origin, set_pending_prompt_origin_named,
 };
 pub use payload::{TEXT_FIELD_LIMIT, common_payload, jcode_object, truncate_marked};
 pub use project::{CommandScope, ScopedCommand, hooks_scope_review, project_hooks_digest};
+pub use prompt_submit::PromptBlocked;
 pub use prompt_submit::{
     PromptSubmit, PromptSubmitOutcome, combine as combine_prompt_verdicts, prompt_payload,
     run_user_prompt_submit,

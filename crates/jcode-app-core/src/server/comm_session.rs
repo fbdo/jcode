@@ -424,6 +424,10 @@ where
 
     if let Some(message) = startup_message {
         persist_headed_startup_message(&new_session_id, message);
+        crate::hooks::set_pending_prompt_origin(
+            &new_session_id,
+            crate::hooks::PromptOrigin::SwarmSpawn,
+        );
     }
 
     match launch_visible(
@@ -573,8 +577,11 @@ pub(super) async fn spawn_swarm_agent(
         .map_err(anyhow::Error::msg)?;
     let resolved_working_dir =
         resolve_spawn_working_dir(working_dir, req_session_id, sessions, swarm_members).await;
+    let coordinator_dir =
+        resolve_spawn_working_dir(None, req_session_id, sessions, swarm_members).await;
+    let definition_dir = coordinator_dir.or_else(|| resolved_working_dir.clone());
     let definition =
-        super::swarm_agent_defs::resolve(agent.as_deref(), resolved_working_dir.as_deref())?;
+        super::swarm_agent_defs::resolve(agent.as_deref(), definition_dir.as_deref())?;
     let coordinator = resolve_coordinator_spawn_identity(req_session_id, sessions).await;
     let coordinator_is_canary = coordinator.is_canary;
     // Capture the requesting client's terminal env so spawn hooks place the new
@@ -588,7 +595,7 @@ pub(super) async fn spawn_swarm_agent(
     let (applied_policy, policy_request) = super::swarm_agent_policy::for_spawn(
         definition.as_ref(),
         agents_config,
-        resolved_working_dir.as_deref(),
+        definition_dir.as_deref(),
         requested_model.clone(),
         requested_effort.clone(),
         matches!(
