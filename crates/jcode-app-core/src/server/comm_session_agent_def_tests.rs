@@ -72,8 +72,7 @@ async fn spawn_with_agent_delivers_persona_first_and_sets_agent_type() {
     let previous = std::env::var_os("JCODE_HOME");
     crate::env::set_var("JCODE_HOME", home.path());
 
-    let sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<crate::agent::Agent>>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    let sessions = Arc::new(crate::server::session_manager::SessionManager::new());
     let provider: Arc<dyn Provider> = Arc::new(QuietProvider::default());
     let state = crate::server::SwarmState::new(
         HashMap::new(),
@@ -185,7 +184,7 @@ async fn spawn_with_agent_delivers_persona_first_and_sets_agent_type() {
 }
 
 struct PolicyFx {
-    sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<crate::agent::Agent>>>>>,
+    sessions: crate::server::SessionAgents,
     provider: Arc<dyn Provider>,
     state: crate::server::SwarmState,
     mcp: Arc<crate::mcp::SharedMcpPool>,
@@ -195,7 +194,7 @@ struct PolicyFx {
 impl PolicyFx {
     fn new(cwd: String) -> Self {
         Self {
-            sessions: Arc::new(RwLock::new(HashMap::new())),
+            sessions: Arc::new(crate::server::session_manager::SessionManager::new()),
             provider: Arc::new(QuietProvider::default()),
             state: crate::server::SwarmState::new(
                 HashMap::new(),
@@ -391,8 +390,7 @@ async fn definition_comes_from_the_coordinator_dir_not_the_worker_dir() {
     let previous = std::env::var_os("JCODE_HOME");
     crate::env::set_var("JCODE_HOME", home.path());
 
-    let sessions: Arc<RwLock<HashMap<String, Arc<tokio::sync::Mutex<crate::agent::Agent>>>>> =
-        Arc::new(RwLock::new(HashMap::new()));
+    let sessions = Arc::new(crate::server::session_manager::SessionManager::new());
     let provider: Arc<dyn Provider> = Arc::new(QuietProvider::default());
     let state = crate::server::SwarmState::new(
         HashMap::new(),

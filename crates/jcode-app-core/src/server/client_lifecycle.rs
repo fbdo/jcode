@@ -2404,7 +2404,8 @@ pub(super) async fn handle_client(
                             start_processing_message(
                                 ProcessingMessage {
                                     id, content, images: Vec::new(), system_reminder: None,
-                                    active_skill: None, server_failover: true,
+                                    active_skill: None, skill_arguments: None, origin: None,
+                                    server_failover: true,
                                 },
                                 &client_session_id,
                                 &mut ProcessingState {

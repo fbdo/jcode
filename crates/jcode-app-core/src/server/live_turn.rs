@@ -447,6 +447,7 @@ mod durable_error_tests {
                 "must not compete".into(),
                 None,
                 Some(crate::session::StoredDisplayRole::System),
+                crate::hooks::PromptOrigin::System,
                 None,
                 swarm.clone(),
             )
