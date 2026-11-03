@@ -819,6 +819,8 @@ impl McpToolsMode {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolConfig {
+    /// Opt into Jev browser handoff. Direct browser actions remain available.
+    pub browser_handoff: bool,
     /// Foreground time before automatic tool handoff, in milliseconds. Zero disables it.
     pub auto_background_timeout_ms: u64,
     /// Tool profile: "full" (default), "acp", "minimal"/"lite", or "none".
@@ -850,6 +852,7 @@ pub struct ToolConfig {
 impl Default for ToolConfig {
     fn default() -> Self {
         Self {
+            browser_handoff: false,
             auto_background_timeout_ms: 3_000,
             profile: String::new(),
             enabled: Vec::new(),
@@ -1034,18 +1037,8 @@ mod color_tests;
 /// Whether integration discovery settings carry no information beyond the shipped
 /// default, so `[sponsors]` can be left out of written config files.
 ///
-/// Discovery originally shipped opt-in with `enabled = false`, and because
-/// config saves serialize the whole struct, any save during that window froze
-/// the old default into the user's file and permanently disabled discovery even
-/// after the default flipped. Omitting default sections prevents a repeat.
+/// Explicit opt-ins must be serialized so unrelated preference saves cannot
+/// silently disable discovery on the next load.
 fn sponsors_is_default(sponsors: &SponsorsConfig) -> bool {
-    sponsors.enabled && is_default_discovery_endpoint(&sponsors.endpoint)
-}
-
-/// Endpoints used by shipped defaults. These may also be explicit user choices.
-fn is_default_discovery_endpoint(endpoint: &str) -> bool {
-    matches!(
-        endpoint.trim_end_matches('/'),
-        "https://api.jcode.sh/v1/discovery" | "https://api.solosystems.dev/v1/discovery"
-    )
+    !sponsors.enabled && sponsors.endpoint == SponsorsConfig::default().endpoint
 }

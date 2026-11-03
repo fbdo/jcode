@@ -5,6 +5,8 @@
 //!
 //! Also provides debug socket events for exposing full TUI state.
 
+mod ssh_sessions;
+
 use crate::message::ToolCall;
 use crate::protocol::{AuthChanged, FeatureToggle, Request, ServerEvent};
 use crate::server;
@@ -244,6 +246,7 @@ pub struct RemoteConnection {
     /// sends). Consumed by the send; absent means a person typed it.
     next_message_origin: Option<&'static str>,
     next_request_id: u64,
+    pending_runtime_commands: std::collections::HashSet<u64>,
     // Bootstrap Done acknowledgments are not completions of a detached turn.
     // Retain recent ids because target Subscribe can acknowledge twice.
     control_done_ids: std::sync::Mutex<std::collections::VecDeque<u64>>,
@@ -294,6 +297,11 @@ fn remote_protocol_frame_exceeds_limit(buffered: usize, incoming: usize) -> bool
 }
 
 pub(crate) trait RemoteEventState {
+    /// Replay has no outstanding control requests. Live connections track IDs.
+    fn finish_runtime_command(&mut self, _id: u64) -> bool {
+        false
+    }
+
     fn handle_tool_start(&mut self, id: &str, name: &str);
     fn handle_tool_input(&mut self, id: Option<&str>, delta: &str);
     fn get_tool_input(&self, id: &str) -> serde_json::Value;
@@ -323,6 +331,43 @@ mod auth;
 mod cloud;
 
 impl RemoteConnection {
+    async fn verify_ssh_ready(&mut self, deadline: Duration) -> Result<()> {
+        let id = self.next_request_id;
+        self.next_request_id += 1;
+        tokio::time::timeout(deadline, async {
+            self.send_request(Request::Ping { id }).await?;
+            // Before Subscribe, only our Pong is valid. Bound the frame and
+            // preserve bytes buffered after its newline for the event reader.
+            let mut frame = Vec::new();
+            loop {
+                let available = self.reader.fill_buf().await?;
+                if available.is_empty() {
+                    anyhow::bail!("SSH transport closed before the remote daemon was ready");
+                }
+                let newline = available.iter().position(|byte| *byte == b'\n');
+                let count = newline.map_or(available.len(), |index| index + 1);
+                if frame.len() + count > 8192 {
+                    anyhow::bail!("SSH readiness reply exceeds 8192 bytes");
+                }
+                frame.extend_from_slice(&available[..count]);
+                self.reader.consume(count);
+                if newline.is_some() {
+                    break;
+                }
+            }
+            match serde_json::from_slice::<ServerEvent>(&frame)? {
+                ServerEvent::Pong {
+                    id: reply_id,
+                    native_ssh_protocol: Some(1),
+                    ..
+                } if reply_id == id => Ok(()),
+                _ => anyhow::bail!("invalid SSH daemon readiness reply"),
+            }
+        })
+        .await
+        .map_err(|_| anyhow::anyhow!("SSH daemon readiness timed out"))?
+    }
+
     /// Connect to the server
     pub async fn connect() -> Result<Self> {
         Self::connect_with_session(None, None, false, None, false, None).await
@@ -364,6 +409,7 @@ impl RemoteConnection {
             // local sockets as well as SSH. Keep its Done distinct from this
             // connection's Subscribe/GetHistory acknowledgments.
             next_request_id: (rand::random::<u64>() & ((1_u64 << 62) - 1)) | (1_u64 << 62),
+            pending_runtime_commands: Default::default(),
             control_done_ids: Default::default(),
             next_message_origin: None,
             tool_diff: RemoteDiffTracker::default(),
@@ -375,6 +421,12 @@ impl RemoteConnection {
             last_account_usage_poll: None,
             call_output_tokens_seen: 0,
         };
+
+        // The local SSH adapter accepts before OpenSSH authenticates. A Unix
+        // connect/write alone must not reset reconnect backoff or show success.
+        if super::is_ssh_remote() {
+            conn.verify_ssh_ready(Duration::from_secs(35)).await?;
+        }
 
         // Subscribe to events
         let subscribe_start = Instant::now();
@@ -389,6 +441,7 @@ impl RemoteConnection {
             supports_pdf_panels: false,
             supports_user_response: false,
             supports_server_failover: false,
+            supports_turn_identity: true,
             id: conn.next_request_id,
             working_dir,
             selfdev,
@@ -608,7 +661,14 @@ impl RemoteConnection {
             args,
         })
         .await?;
+        self.pending_runtime_commands.insert(id);
         Ok(id)
+    }
+
+    /// Runtime failures share the Error wire variant with chat failures. Keep
+    /// request ownership so the client can render them without ending a turn.
+    pub fn finish_runtime_command(&mut self, id: u64) -> bool {
+        self.pending_runtime_commands.remove(&id)
     }
 
     /// Clear the server-side conversation and replace it with a fresh session.
@@ -1423,6 +1483,7 @@ impl RemoteConnection {
             cloud_callbacks: Vec::new(),
             client_instance_id: None,
             next_request_id: 1,
+            pending_runtime_commands: Default::default(),
             control_done_ids: Default::default(),
             next_message_origin: None,
             tool_diff: RemoteDiffTracker::default(),
@@ -1511,6 +1572,10 @@ impl RemoteConnection {
 }
 
 impl RemoteEventState for RemoteConnection {
+    fn finish_runtime_command(&mut self, id: u64) -> bool {
+        Self::finish_runtime_command(self, id)
+    }
+
     fn handle_tool_start(&mut self, id: &str, name: &str) {
         Self::handle_tool_start(self, id, name);
     }

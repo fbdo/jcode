@@ -3,7 +3,7 @@ use super::swarm_mutation_state::{
     PersistedSwarmMutationResponse, SwarmMutationRuntime, begin_or_replay, finish_request,
     request_key,
 };
-use super::turn_failover::process_server_initiated_message;
+use super::turn_failover::process_reserved_locked_message_with_server_failover;
 use super::{
     SessionInterruptQueues, SwarmEvent, SwarmEventType, SwarmMember, SwarmState, VersionedPlan,
     broadcast_swarm_plan, broadcast_swarm_status, create_headless_session, fanout_session_event,
@@ -12,7 +12,6 @@ use super::{
     remove_session_interrupt_queue, set_member_task_label, truncate_detail, update_member_status,
     update_member_status_with_report,
 };
-use crate::agent::Agent;
 use crate::config::SwarmSpawnMode;
 use crate::protocol::{NotificationType, ServerEvent};
 use crate::provider::Provider;
@@ -23,7 +22,7 @@ use std::sync::{Arc, Mutex as StdMutex, OnceLock, Weak};
 use std::time::Instant;
 use tokio::sync::{Mutex, RwLock, broadcast, mpsc};
 
-type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
+use super::SessionAgents;
 type ChannelSubscriptions = Arc<RwLock<HashMap<String, HashMap<String, HashSet<String>>>>>;
 type ClientConnections = Arc<RwLock<HashMap<String, ClientConnectionInfo>>>;
 
@@ -395,6 +394,55 @@ fn resolve_swarm_spawn_selection(
     match configured_swarm_model {
         Some(model) => selection_for_concrete_model(model, coordinator),
         None => inherit_coordinator_selection(coordinator),
+    }
+}
+
+fn persist_headed_startup_message(session_id: &str, message: &str) {
+    crate::logging::info(&format!(
+        "Headed spawn: persisting startup submission for {session_id} (chars={}) to client-input handoff file",
+        message.chars().count(),
+    ));
+    crate::client_input::save_startup_submission_for_session(
+        session_id,
+        message.to_string(),
+        Vec::new(),
+    );
+}
+
+fn clear_headed_startup_message(session_id: &str) {
+    if let Ok(jcode_dir) = crate::storage::jcode_dir() {
+        let path = jcode_dir.join(format!("client-input-{}", session_id));
+        if let Err(error) = std::fs::remove_file(&path)
+            && error.kind() != std::io::ErrorKind::NotFound
+        {
+            crate::logging::warn(&format!(
+                "Unable to remove prepared spawn file {}: {error}",
+                path.display()
+            ));
+        }
+    }
+}
+
+fn cleanup_prepared_visible_spawn_session(session_id: &str) {
+    crate::session_env::remove_session_env(session_id);
+    clear_headed_startup_message(session_id);
+    if let Ok(path) = crate::session::session_path(session_id)
+        && let Err(error) = std::fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        crate::logging::warn(&format!(
+            "Failed to clean prepared session file {}: {error}",
+            path.display()
+        ));
+    }
+    if let Ok(path) = crate::session::session_journal_path(session_id)
+        && let Err(error) = std::fs::remove_file(&path)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        crate::logging::warn(&format!(
+            "Failed to clean prepared session file {}: {error}",
+            path.display()
+        ));
     }
 }
 
@@ -824,6 +872,10 @@ pub(super) async fn spawn_swarm_agent(
             let event_counter2 = Arc::clone(event_counter);
             let swarm_event_tx2 = swarm_event_tx.clone();
             crate::runtime_activity::spawn_session(&new_session_id, async move {
+                let mut agent = agent_arc.lock().await;
+                let Ok(lease) = agent.claim_server_turn() else {
+                    return;
+                };
                 update_member_status(
                     &sid_clone,
                     "running",
@@ -835,33 +887,32 @@ pub(super) async fn spawn_swarm_agent(
                     Some(&swarm_event_tx2),
                 )
                 .await;
-                let event_tx = super::session_event_fanout_sender(
+                let (fallback, _) = tokio::sync::mpsc::unbounded_channel();
+                let events = super::state::TurnEventChannel::new(
                     sid_clone.clone(),
                     Arc::clone(&swarm_members2),
+                    fallback,
+                    &lease,
                 );
-                let start_message_index = {
-                    let agent = agent_arc.lock().await;
-                    agent.message_count()
-                };
                 crate::hooks::set_pending_prompt_origin(
                     &sid_clone,
                     crate::hooks::PromptOrigin::SwarmSpawn,
                 );
-                let result = process_server_initiated_message(
-                    Arc::clone(&agent_arc),
+                let start_message_index = agent.message_count();
+                let result = process_reserved_locked_message_with_server_failover(
+                    &mut agent,
+                    &lease,
                     &initial_msg,
                     vec![],
                     None,
-                    event_tx,
+                    events.sender(),
                 )
                 .await;
-                let completion_report = {
-                    let agent = agent_arc.lock().await;
-                    agent.recent_assistant_output_tail_after(start_message_index)
-                };
-                let (new_status, new_detail) = match result {
+                let completion_report =
+                    agent.recent_assistant_output_tail_after(start_message_index);
+                let (new_status, new_detail) = match &result {
                     Ok(()) => ("ready", None),
-                    Err(ref error) => ("failed", Some(truncate_detail(&error.to_string(), 120))),
+                    Err(error) => ("failed", Some(truncate_detail(&error.to_string(), 120))),
                 };
                 update_member_status_with_report(
                     &sid_clone,
@@ -875,6 +926,17 @@ pub(super) async fn spawn_swarm_agent(
                     Some(&swarm_event_tx2),
                 )
                 .await;
+                let terminal = match result {
+                    Ok(()) => ServerEvent::Done { id: 0 },
+                    Err(error) => ServerEvent::Error {
+                        id: 0,
+                        message: crate::util::format_error_chain(&error),
+                        retry_after_secs: None,
+                    },
+                };
+                let _ = events.sender().send(terminal);
+                drop(agent);
+                events.finish().await;
             });
         }
     }

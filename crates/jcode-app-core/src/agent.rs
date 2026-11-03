@@ -16,15 +16,19 @@ mod prompting;
 mod provider;
 mod response_recovery;
 mod skill_activation;
+mod runtime_recovery;
 mod status;
 mod stop_hook;
 mod streaming;
 #[cfg(test)]
 mod swarm_reminder_tests;
-mod tool_markup_recovery;
 mod tools;
 mod turn_execution;
 mod turn_loops;
+mod turn_ownership;
+pub(crate) use turn_ownership::{
+    RuntimeMutationLease, TurnLease, TurnObserver, TurnPublicationPin,
+};
 mod turn_streaming_mpsc;
 mod utils;
 
@@ -65,8 +69,6 @@ pub use jcode_agent_runtime::{
 };
 
 const JCODE_NATIVE_TOOLS: &[&str] = &["selfdev", "desktop_selfdev", "communicate"];
-static RECOVERED_TEXT_WRAPPED_TOOL_CALLS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
 static JCODE_REPO_SOURCE_STATE: LazyLock<(Option<String>, Option<bool>)> = LazyLock::new(|| {
     crate::build::get_repo_dir()
         .map(|repo_dir| {
@@ -320,6 +322,7 @@ struct RewindUndoSnapshot {
 }
 
 pub struct Agent {
+    turn_ownership: turn_ownership::TurnOwnership,
     provider: Arc<dyn Provider>,
     registry: Registry,
     skills: Arc<SkillRegistry>,
@@ -433,6 +436,22 @@ pub struct Agent {
 }
 
 impl Agent {
+    pub(crate) fn server_turn_observer(&self) -> TurnObserver {
+        self.turn_ownership.observer()
+    }
+
+    pub(crate) fn claim_runtime_mutation(&self) -> Result<RuntimeMutationLease> {
+        self.turn_ownership.claim_mutation()
+    }
+
+    pub(crate) fn claim_server_turn(&self) -> Result<TurnLease> {
+        self.turn_ownership.claim()
+    }
+
+    pub(crate) fn validate_server_turn(&self, lease: &TurnLease) -> Result<()> {
+        self.turn_ownership.validate(lease)
+    }
+
     fn refresh_agents_md_snapshot(&mut self) {
         let working_dir = self
             .session
@@ -499,6 +518,7 @@ impl Agent {
             disabled_tools.clone(),
         );
         let mut agent = Self {
+            turn_ownership: Default::default(),
             provider,
             registry,
             skills,
@@ -1192,6 +1212,16 @@ impl Agent {
 
     pub(crate) fn set_working_dir_for_pending_context(&mut self, working_dir: Option<String>) {
         if working_dir.is_some() {
+            if self.session.original_working_dir.is_none()
+                && self.session.working_dir != working_dir
+                && self
+                    .session
+                    .messages
+                    .iter()
+                    .any(|message| message.role == Role::User)
+            {
+                self.session.original_working_dir = self.session.working_dir.clone();
+            }
             self.session.working_dir = working_dir;
             self.unlock_tools();
             self.session.refresh_initial_session_context_message();

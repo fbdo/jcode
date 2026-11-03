@@ -1,4 +1,5 @@
 use super::ClientConnectionInfo;
+use super::SessionAgents;
 use super::server_has_newer_binary;
 use crate::agent::Agent;
 use crate::bus::Bus;
@@ -13,7 +14,6 @@ use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use std::time::{Duration, Instant};
-type SessionAgents = Arc<RwLock<HashMap<String, Arc<Mutex<Agent>>>>>;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum HistoryPayloadMode {
@@ -180,6 +180,7 @@ pub(super) async fn handle_get_history(
     server_icon: &str,
     was_interrupted: Option<bool>,
     supports_pdf_panels: bool,
+    supports_turn_identity: bool,
     history_base: Option<crate::protocol::HistoryBase>,
 ) -> Result<()> {
     let history_start = Instant::now();
@@ -207,6 +208,7 @@ pub(super) async fn handle_get_history(
             was_interrupted,
             activity,
             supports_pdf_panels,
+            supports_turn_identity,
             history_base,
         )
         .await?;
@@ -232,6 +234,7 @@ pub(super) async fn handle_get_history(
         HistoryPayloadMode::Full,
         true,
         supports_pdf_panels,
+        supports_turn_identity,
         history_base,
     )
     .await?;
@@ -258,6 +261,24 @@ pub(super) async fn handle_get_model_catalog(
 ) -> Result<()> {
     let started = Instant::now();
     let build_started = Instant::now();
+    let live = super::available_models_cache::try_for_agent(agent, |agent_guard| {
+        let provider = agent_guard.provider_handle();
+        (
+            agent_guard.active_resolved_credential(),
+            provider.service_tier(),
+            Some(
+                provider
+                    .available_service_tiers()
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect(),
+            ),
+            provider.reasoning_effort(),
+            provider_oauth_email(provider.as_ref()),
+            provider.serving_oauth_account_label(),
+        )
+    })
+    .await?;
     let (
         provider_name,
         provider_model,
@@ -271,65 +292,64 @@ pub(super) async fn handle_get_model_catalog(
         provider_oauth_email,
         provider_oauth_account_label,
     ) = {
-        match agent.try_lock() {
-            Ok(agent_guard) => {
-                let catalog = super::available_models_cache::for_agent(&agent_guard).snapshot();
+        match live {
+            Some((catalog, (credential, tier, tiers, effort, email, account_label))) => {
+                let catalog = catalog.snapshot();
                 (
-                    Some(agent_guard.provider_name()),
-                    Some(agent_guard.provider_model()),
+                    catalog.provider_name,
+                    catalog.provider_model,
                     catalog.available_models,
                     catalog.model_routes,
-                    agent_guard.active_resolved_credential(),
-                    agent_guard.provider_handle().service_tier(),
-                    Some(
-                        agent_guard
-                            .provider_handle()
-                            .available_service_tiers()
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
-                    ),
-                    agent_guard.provider_handle().reasoning_effort(),
+                    credential,
+                    tier,
+                    tiers,
+                    effort,
                     "live",
-                    provider_oauth_email(agent_guard.provider_handle().as_ref()),
-                    agent_guard.provider_handle().serving_oauth_account_label(),
+                    email,
+                    account_label,
                 )
             }
-            Err(_) => {
+            None => {
                 crate::logging::warn(&format!(
                     "handle_get_model_catalog: session {} busy, using provider/persisted fallback",
                     session_id
                 ));
-                let persisted = Session::load_for_remote_startup(session_id)
-                    .or_else(|_| Session::load_startup_stub(session_id))
-                    .ok();
-                let persisted_model = persisted.as_ref().and_then(|session| session.model.clone());
-                let mut model_routes = provider.model_routes();
-                crate::model_usage::enrich_routes(&mut model_routes);
-                (
-                    // Same field the non-busy path builds: it must name the
-                    // profile, not the multiplexing slot (#1286). This fallback
-                    // is exactly the lock-contention case a client cannot
-                    // correct, so `provider.name()` here reached the header and
-                    // the spend ledger as `OpenRouter`.
-                    Some(provider.display_name()),
-                    persisted_model.or_else(|| Some(provider.model())),
-                    provider.available_models_display(),
-                    model_routes,
-                    provider.active_resolved_credential(),
-                    provider.service_tier(),
-                    Some(
-                        provider
-                            .available_service_tiers()
-                            .into_iter()
-                            .map(str::to_string)
-                            .collect(),
-                    ),
-                    provider.reasoning_effort(),
-                    "fallback",
-                    provider_oauth_email(provider.as_ref()),
-                    provider.serving_oauth_account_label(),
-                )
+                let session_id = session_id.to_string();
+                let provider = Arc::clone(provider);
+                tokio::task::spawn_blocking(move || {
+                    let persisted = Session::load_for_remote_startup(&session_id)
+                        .or_else(|_| Session::load_startup_stub(&session_id))
+                        .ok();
+                    let persisted_model =
+                        persisted.as_ref().and_then(|session| session.model.clone());
+                    let mut model_routes = provider.model_routes();
+                    crate::model_usage::enrich_routes(&mut model_routes);
+                    (
+                        // Same field the non-busy path builds: it must name the
+                        // profile, not the multiplexing slot (#1286). This fallback
+                        // is exactly the lock-contention case a client cannot
+                        // correct, so `provider.name()` here reached the header and
+                        // the spend ledger as `OpenRouter`.
+                        Some(provider.display_name()),
+                        persisted_model.or_else(|| Some(provider.model())),
+                        provider.available_models_display(),
+                        model_routes,
+                        provider.active_resolved_credential(),
+                        provider.service_tier(),
+                        Some(
+                            provider
+                                .available_service_tiers()
+                                .into_iter()
+                                .map(str::to_string)
+                                .collect(),
+                        ),
+                        provider.reasoning_effort(),
+                        "fallback",
+                        provider_oauth_email(provider.as_ref()),
+                        provider.serving_oauth_account_label(),
+                    )
+                })
+                .await?
             }
         }
     };
@@ -689,6 +709,7 @@ async fn send_history_from_persisted_session(
     was_interrupted: Option<bool>,
     activity: Option<SessionActivitySnapshot>,
     supports_pdf_panels: bool,
+    supports_turn_identity: bool,
     history_base: Option<crate::protocol::HistoryBase>,
 ) -> Result<()> {
     let loaded = super::run_blocking_io(|| {
@@ -810,7 +831,15 @@ async fn send_history_from_persisted_session(
         applets: crate::applets::snapshot_for_session(session_id).unwrap_or_default(),
     };
 
-    write_event(writer, &history_event).await
+    let json = encode_event(&history_event);
+    let mut writer_guard = writer.lock().await;
+    if supports_turn_identity && let Some(state) = history_turn_state(sessions, session_id) {
+        writer_guard
+            .write_all(encode_event(&state).as_bytes())
+            .await?;
+    }
+    writer_guard.write_all(json.as_bytes()).await?;
+    Ok(())
 }
 
 /// How long the bootstrap History payload may wait on the model-name catalog.
@@ -861,6 +890,7 @@ async fn send_history_with_guard(
     payload_mode: HistoryPayloadMode,
     include_model_catalog: bool,
     supports_pdf_panels: bool,
+    supports_turn_identity: bool,
     history_base: Option<crate::protocol::HistoryBase>,
 ) -> Result<()> {
     let history_start = Instant::now();
@@ -1122,6 +1152,11 @@ async fn send_history_with_guard(
     let mut writer_guard = writer.lock().await;
     let writer_lock_ms = writer_lock_start.elapsed().as_millis();
     let write_start = Instant::now();
+    if supports_turn_identity && let Some(state) = history_turn_state(sessions, session_id) {
+        writer_guard
+            .write_all(encode_event(&state).as_bytes())
+            .await?;
+    }
     let result = writer_guard.write_all(json.as_bytes()).await;
     drop(writer_guard);
     // Release the serialized payload before any further work (logging below
@@ -1184,6 +1219,17 @@ pub(super) async fn session_activity_snapshot(
                 current_tool_name: None,
             },
         )
+    })
+}
+
+fn history_turn_state(sessions: &SessionAgents, session_id: &str) -> Option<ServerEvent> {
+    let observer = sessions.turn_observer(session_id)?;
+    let (latest_turn_id, active) = observer.snapshot();
+    Some(ServerEvent::TurnState {
+        session_id: session_id.to_string(),
+        runtime_generation: observer.runtime_generation().to_string(),
+        turn_id: active.map(|identity| identity.turn_id),
+        latest_turn_id,
     })
 }
 

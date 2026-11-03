@@ -1,8 +1,9 @@
-//! Cancellable full-transcript search. Never reads transcript files on the UI thread.
+//! Debounced fuzzy and full-transcript search. Only cheap literal metadata
+//! matching runs on the UI thread, never fuzzy DP or transcript file reads.
 use super::loading::search_query_tokens;
 use super::{ResumeTarget, SessionInfo};
 use serde::de::{DeserializeSeed, IgnoredAny, MapAccess, SeqAccess, Visitor};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{
@@ -13,11 +14,174 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 const DEBOUNCE: Duration = Duration::from_millis(150);
+const IMMEDIATE_METADATA_BYTES: usize = 1024 * 1024;
+
+/// A close contiguous opening request outranks incidental transcript evidence.
+/// Otherwise literal evidence outranks typo-only evidence, then metadata and
+/// whole words break ties instead of unrelated session recency.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+pub(super) struct SearchRank {
+    opening_prompt: usize,
+    literal: bool,
+    intent_terms: usize,
+    exact_field: bool,
+    metadata_terms: usize,
+    whole_terms: usize,
+    score: i64,
+}
+
+pub(super) fn literal_metadata_rank(index: &str, tokens: &[String]) -> SearchRank {
+    let mut metadata_terms = 0;
+    let mut whole_terms = 0;
+    for token in tokens {
+        let mut matches = index.match_indices(token.as_str()).peekable();
+        if matches.peek().is_none() {
+            continue;
+        }
+        metadata_terms += 1;
+        // Search only occurrences, rather than splitting the entire index
+        // again for each query term. Boundaries retain Unicode word semantics.
+        if token.chars().all(char::is_alphanumeric)
+            && matches.any(|(start, matched)| {
+                let end = start + matched.len();
+                !index[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_alphanumeric)
+                    && !index[end..]
+                        .chars()
+                        .next()
+                        .is_some_and(char::is_alphanumeric)
+            })
+        {
+            whole_terms += 1;
+        }
+    }
+    SearchRank {
+        opening_prompt: 0,
+        literal: metadata_terms == tokens.len(),
+        intent_terms: 0,
+        exact_field: false,
+        metadata_terms,
+        whole_terms,
+        score: 0,
+    }
+}
+
+pub(super) fn exact_metadata_field(session: &SessionInfo, query: &str) -> bool {
+    [&session.title, &session.short_name, &session.id]
+        .iter()
+        .any(|field| normalized_equals(field, query))
+        || session
+            .save_label
+            .as_ref()
+            .is_some_and(|label| normalized_equals(label, query))
+}
+
+fn normalized_equals(field: &str, query: &str) -> bool {
+    let field = field.trim();
+    if field.is_ascii() && query.is_ascii() {
+        field.eq_ignore_ascii_case(query)
+    } else {
+        field.to_lowercase() == query
+    }
+}
+
+pub(super) fn lowercase_field(field: &str) -> std::borrow::Cow<'_, str> {
+    if field.is_ascii() && !field.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        std::borrow::Cow::Borrowed(field)
+    } else {
+        std::borrow::Cow::Owned(field.to_lowercase())
+    }
+}
+
+impl SearchRank {
+    pub(super) fn with_intent_terms(mut self, terms: usize) -> Self {
+        self.intent_terms = terms;
+        self
+    }
+
+    pub(super) fn with_exact_field(mut self, exact: bool) -> Self {
+        self.exact_field = exact;
+        self
+    }
+}
+
+fn fuzzy_metadata_rank(index: &str, tokens: &[String]) -> SearchRank {
+    let mut rank = literal_metadata_rank(index, tokens);
+    // Score every term, including terms already matched literally. Scoring
+    // only the missing terms perversely rewarded candidates with fewer hits.
+    rank.score = tokens
+        .iter()
+        .filter_map(|token| {
+            let query = jcode_fuzzy::PreparedTokenQuery::new(token);
+            index
+                .split_whitespace()
+                // Match the boolean search's DP bound for minified data/URLs.
+                .filter(|word| word.chars().count() <= 128)
+                .filter_map(|word| query.score(word))
+                .max()
+                .map(i64::from)
+        })
+        .sum();
+    rank
+}
 
 struct Candidate {
     id: String,
     paths: Vec<PathBuf>,
+    search_index: String,
     missing_tokens: Vec<String>,
+    exact_field: bool,
+    opening_prompt: String,
+}
+
+// A retyped request is stronger evidence than words scattered throughout a
+// huge transcript. Compare contiguous word windows, allowing a few misspelled
+// words without requiring every short function word to match literally.
+fn opening_prompt_rank(prompt: &str, query: &str) -> usize {
+    let words = |text: &str| -> Vec<String> {
+        text.split_whitespace()
+            .take(256)
+            .map(|word| {
+                word.trim_matches(|c: char| !c.is_alphanumeric())
+                    .to_lowercase()
+            })
+            .filter(|word| !word.is_empty())
+            .collect()
+    };
+    let query = words(query);
+    if query.len() < 4 || query.len() > 64 {
+        return 0;
+    }
+    let prompt = words(prompt);
+    // Missing spaces ("ofhow") should not hide an otherwise exact request.
+    let compact_query = query.concat();
+    if compact_query.chars().count() >= 16 && prompt.concat().contains(&compact_query) {
+        return query.len();
+    }
+    let prepared: Vec<_> = query
+        .iter()
+        .map(|word| jcode_fuzzy::PreparedTokenQuery::new(word))
+        .collect();
+    prompt
+        .windows(query.len())
+        .filter_map(|window| {
+            let matched = query
+                .iter()
+                .zip(&prepared)
+                .zip(window)
+                .filter(|((word, prepared), candidate)| {
+                    word == candidate
+                        || (word.len() >= 4
+                            && candidate.len() <= 128
+                            && prepared.matches_search_text(candidate))
+                })
+                .count();
+            (matched * 5 >= query.len() * 4).then_some(matched)
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 #[derive(Default)]
@@ -25,9 +189,10 @@ pub(super) struct TranscriptSearch {
     query: String,
     candidates: Vec<Candidate>,
     started_at: Option<Instant>,
-    receiver: Option<mpsc::Receiver<String>>,
+    receiver: Option<mpsc::Receiver<(String, SearchRank)>>,
     cancel: Arc<AtomicBool>,
-    matches: HashSet<String>,
+    ranks: HashMap<String, SearchRank>,
+    defer_metadata: bool,
 }
 
 impl Drop for TranscriptSearch {
@@ -51,26 +216,34 @@ impl TranscriptSearch {
             return;
         }
         let tokens = search_query_tokens(query);
+        let sessions: Vec<_> = sessions.collect();
+        self.defer_metadata = sessions
+            .iter()
+            .map(|session| session.search_index.len())
+            .sum::<usize>()
+            > IMMEDIATE_METADATA_BYTES;
         for session in sessions {
             let missing_tokens: Vec<_> = tokens
                 .iter()
                 .filter(|token| {
-                    !jcode_fuzzy::PreparedTokenQuery::new(token)
-                        .matches_search_text(&session.search_index)
+                    self.defer_metadata || !session.search_index.contains(token.as_str())
                 })
                 .cloned()
                 .collect();
-            if missing_tokens.is_empty() {
+            if missing_tokens.is_empty()
+                && (tokens.len() < 4 || session.first_user_prompt.is_none())
+            {
                 continue;
             }
             let paths = transcript_paths(session);
-            if !paths.is_empty() {
-                self.candidates.push(Candidate {
-                    id: session.id.clone(),
-                    paths,
-                    missing_tokens,
-                });
-            }
+            self.candidates.push(Candidate {
+                id: session.id.clone(),
+                paths,
+                search_index: session.search_index.clone(),
+                missing_tokens,
+                exact_field: exact_metadata_field(session, query),
+                opening_prompt: session.first_user_prompt.clone().unwrap_or_default(),
+            });
         }
         if !self.candidates.is_empty() {
             self.started_at = Some(Instant::now());
@@ -78,7 +251,22 @@ impl TranscriptSearch {
     }
 
     pub(super) fn contains(&self, id: &str) -> bool {
-        self.matches.contains(id)
+        self.ranks.contains_key(id)
+    }
+
+    #[cfg(test)]
+    pub(super) fn contains_literal(&self, id: &str) -> bool {
+        self.ranks.get(id).is_some_and(|rank| rank.literal)
+    }
+
+    pub(super) fn rank(&self, id: &str) -> SearchRank {
+        self.ranks
+            .get(id)
+            .map_or_else(SearchRank::default, |rank| *rank)
+    }
+
+    pub(super) fn defers_metadata(&self) -> bool {
+        self.defer_metadata
     }
 
     pub(super) fn pending(&self) -> bool {
@@ -94,18 +282,100 @@ impl TranscriptSearch {
             self.started_at = None;
             let candidates = std::mem::take(&mut self.candidates);
             let cancel = self.cancel.clone();
+            let tokens = search_query_tokens(&self.query);
+            let query = self.query.clone();
             let (sender, receiver) = mpsc::channel();
             match std::thread::Builder::new()
                 .name("jcode-transcript-search".into())
                 .spawn(move || {
-                    for candidate in candidates {
+                    // Finish the in-memory fuzzy pass before opening any large
+                    // transcripts. Neither DP matching nor disk scans belong
+                    // on the keystroke/render thread.
+                    let mut fuzzy_candidates = Vec::new();
+                    for mut candidate in candidates {
                         if cancel.load(Ordering::Relaxed) {
-                            break;
+                            return;
                         }
-                        if paths_match(&candidate.paths, &candidate.missing_tokens, &cancel)
-                            && sender.send(candidate.id).is_err()
+                        let opening_prompt = opening_prompt_rank(&candidate.opening_prompt, &query);
+                        if opening_prompt > 0 {
+                            let mut rank = fuzzy_metadata_rank(&candidate.search_index, &tokens);
+                            rank.opening_prompt = opening_prompt;
+                            if sender.send((candidate.id.clone(), rank)).is_err() {
+                                return;
+                            }
+                        }
+                        candidate
+                            .missing_tokens
+                            .retain(|token| !candidate.search_index.contains(token.as_str()));
+                        if candidate.missing_tokens.is_empty() {
+                            let rank = literal_metadata_rank(&candidate.search_index, &tokens)
+                                .with_exact_field(candidate.exact_field);
+                            if sender.send((candidate.id, rank)).is_err() {
+                                return;
+                            }
+                            continue;
+                        }
+                        fuzzy_candidates.push(candidate);
+                    }
+                    let mut transcripts = Vec::new();
+                    for mut candidate in fuzzy_candidates {
+                        if cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        let mut fuzzy_missing = candidate.missing_tokens.clone();
+                        let rank = fuzzy_metadata_rank(&candidate.search_index, &tokens)
+                            .with_exact_field(candidate.exact_field);
+                        fuzzy_missing.retain(|token| {
+                            !jcode_fuzzy::PreparedTokenQuery::new(token)
+                                .matches_search_text(&candidate.search_index)
+                        });
+                        candidate.search_index = String::new();
+                        if fuzzy_missing.is_empty()
+                            && sender.send((candidate.id.clone(), rank)).is_err()
                         {
-                            break;
+                            return;
+                        }
+                        if !candidate.paths.is_empty() {
+                            transcripts.push((candidate, fuzzy_missing, rank));
+                        }
+                    }
+                    let mut fuzzy_transcripts = Vec::new();
+                    for (candidate, fuzzy_missing, rank) in transcripts {
+                        if cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if paths_match_mode(
+                            &candidate.paths,
+                            &candidate.missing_tokens,
+                            &cancel,
+                            false,
+                        ) {
+                            if sender
+                                .send((
+                                    candidate.id,
+                                    SearchRank {
+                                        literal: true,
+                                        ..rank
+                                    },
+                                ))
+                                .is_err()
+                            {
+                                return;
+                            }
+                        } else if !fuzzy_missing.is_empty() {
+                            fuzzy_transcripts.push((candidate, fuzzy_missing, rank));
+                        }
+                    }
+                    // Exact transcript hits must not wait behind typo-tolerant
+                    // scans of unrelated, potentially very large sessions.
+                    for (candidate, missing, rank) in fuzzy_transcripts {
+                        if cancel.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if paths_match(&candidate.paths, &missing, &cancel)
+                            && sender.send((candidate.id, rank)).is_err()
+                        {
+                            return;
                         }
                     }
                 }) {
@@ -119,7 +389,14 @@ impl TranscriptSearch {
         if let Some(receiver) = &self.receiver {
             for _ in 0..64 {
                 match receiver.try_recv() {
-                    Ok(id) => changed |= self.matches.insert(id),
+                    Ok((id, rank)) => {
+                        // Progressive evidence may upgrade a match, never
+                        // erase a stronger earlier rank when a scan finishes.
+                        if self.ranks.get(&id).is_none_or(|previous| rank > *previous) {
+                            self.ranks.insert(id, rank);
+                            changed = true;
+                        }
+                    }
                     Err(mpsc::TryRecvError::Empty) => break,
                     Err(mpsc::TryRecvError::Disconnected) => {
                         self.receiver = None;
@@ -150,8 +427,11 @@ fn transcript_paths(session: &SessionInfo) -> Vec<PathBuf> {
             };
             let dir = home.join("sessions");
             vec![
-                dir.join(format!("{session_id}.json")),
+                // JSONL records use serde's fast slice parser, while snapshots
+                // require its streaming reader. Search the journal first and
+                // retain the snapshot fallback for compacted/legacy sessions.
                 dir.join(format!("{session_id}.journal.jsonl")),
+                dir.join(format!("{session_id}.json")),
             ]
         }
         ResumeTarget::ClaudeCodeSession { session_path, .. }
@@ -166,6 +446,7 @@ struct Scan<'a> {
     tokens: &'a [String],
     found: Vec<bool>,
     cancel: &'a AtomicBool,
+    fuzzy: bool,
 }
 
 impl Scan<'_> {
@@ -179,7 +460,11 @@ impl Scan<'_> {
         }
         let lower = text.to_lowercase();
         for (token, found) in self.tokens.iter().zip(&mut self.found) {
-            *found |= jcode_fuzzy::PreparedTokenQuery::new(token).matches_search_text(&lower);
+            if !*found {
+                *found = lower.contains(token)
+                    || (self.fuzzy
+                        && jcode_fuzzy::PreparedTokenQuery::new(token).matches_search_text(&lower));
+            }
         }
         if self.complete() {
             return Err(E::custom("search complete"));
@@ -252,10 +537,20 @@ impl Read for CancellableReader<'_> {
 }
 
 fn paths_match(paths: &[PathBuf], tokens: &[String], cancel: &AtomicBool) -> bool {
+    paths_match_mode(paths, tokens, cancel, true)
+}
+
+fn paths_match_mode(
+    paths: &[PathBuf],
+    tokens: &[String],
+    cancel: &AtomicBool,
+    fuzzy: bool,
+) -> bool {
     let mut scan = Scan {
         tokens,
         found: vec![false; tokens.len()],
         cancel,
+        fuzzy,
     };
     for path in paths {
         if cancel.load(Ordering::Relaxed) {
@@ -353,3 +648,7 @@ fn log_scan_error(path: &Path, record: Option<usize>, scan: &Scan<'_>, error: &s
 #[cfg(test)]
 #[path = "transcript_search_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "relevance_tests.rs"]
+mod relevance_tests;

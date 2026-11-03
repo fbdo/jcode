@@ -2,6 +2,16 @@ use super::*;
 use ratatui::widgets::Wrap;
 
 impl SessionPicker {
+    pub(super) fn estimated_tokens_color(tokens: usize) -> Color {
+        match tokens {
+            0 => rgb(100, 100, 100),
+            1..10_000 => rgb(129, 199, 132),
+            10_000..50_000 => rgb(255, 213, 79),
+            50_000..=1_000_000 => rgb(255, 167, 38),
+            _ => rgb(239, 115, 115),
+        }
+    }
+
     fn running_spinner_frame() -> usize {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -177,12 +187,10 @@ impl SessionPicker {
         &self,
         session: &SessionInfo,
         is_selected: bool,
-        spinner_frame: usize,
+        _spinner_frame: usize,
     ) -> Vec<Line<'static>> {
         let dim: Color = rgb(100, 100, 100);
         let dimmer: Color = rgb(70, 70, 70);
-        let user_clr: Color = rgb(138, 180, 248);
-        let accent: Color = rgb(186, 139, 255);
         let batch_restore: Color = rgb(255, 140, 140);
 
         // The list is ordered by last activity, so show that instead of the
@@ -220,54 +228,7 @@ impl SessionPicker {
             Style::default().fg(rgb(90, 90, 90))
         };
 
-        let time_ago = format_time_ago(session.last_message_time);
-        // Live presence (a running process owns this session) takes precedence
-        // over the persisted snapshot status: it distinguishes sessions still
-        // working on a response from ones ready for input, which the stored
-        // `SessionStatus::Active` alone cannot.
         let is_current = self.session_is_current(session);
-        let live_badge = if recently_closed {
-            // A detached agent can still have a PID/streaming marker. The
-            // actual last-client EOF is more useful for recovering its window.
-            Some(("↩", rgb(255, 193, 7), "just closed".to_string()))
-        } else if self.session_is_live(session) {
-            if session.source == SessionSource::ClaudeCode {
-                Some(("●", rgb(120, 210, 255), "live Claude".to_string()))
-            } else if self.session_is_streaming(session) {
-                let label = match self.session_streaming_duration(session) {
-                    Some(elapsed) => format!("working {}", format_short_duration(elapsed)),
-                    None => "working".to_string(),
-                };
-                Some((
-                    jcode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES[spinner_frame
-                        % jcode_tui_render::swarm_gallery::STRIP_SPINNER_FRAMES.len()],
-                    rgb(255, 193, 7),
-                    label,
-                ))
-            } else {
-                Some(("●", rgb(100, 220, 130), "ready".to_string()))
-            }
-        } else {
-            None
-        };
-        let (status_icon, status_color, time_label) = match live_badge {
-            Some(badge) => badge,
-            None => match &session.status {
-                SessionStatus::Active => ("▶", rgb(100, 200, 100), "active".to_string()),
-                SessionStatus::Closed => ("✓", dim, format!("closed {}", time_ago)),
-                SessionStatus::Crashed { .. } => {
-                    ("💥", rgb(220, 100, 100), format!("crashed {}", time_ago))
-                }
-                SessionStatus::Reloaded => ("🔄", user_clr, format!("reloaded {}", time_ago)),
-                SessionStatus::Compacted => {
-                    ("📦", rgb(255, 193, 7), format!("compacted {}", time_ago))
-                }
-                SessionStatus::RateLimited => ("⏳", accent, format!("rate-limited {}", time_ago)),
-                SessionStatus::Error { .. } => {
-                    ("❌", rgb(220, 100, 100), format!("errored {}", time_ago))
-                }
-            },
-        };
 
         let primary_title = Self::primary_title_display(session);
         let mut line1_spans = vec![
@@ -286,11 +247,6 @@ impl SessionPicker {
             Span::styled(canary_marker, Style::default().fg(rgb(255, 193, 7))),
             Span::styled(debug_marker, Style::default().fg(rgb(180, 180, 180))),
             Span::styled(saved_marker, Style::default().fg(rgb(255, 180, 100))),
-            Span::styled(
-                format!(" {}", status_icon),
-                Style::default().fg(status_color),
-            ),
-            Span::styled(format!("  {}", time_label), Style::default().fg(dim)),
         ]);
         if let Some(ref label) = session.save_label {
             let label_style = Style::default().fg(rgb(255, 200, 140));
@@ -338,90 +294,38 @@ impl SessionPicker {
                     .add_modifier(Modifier::BOLD),
             ));
         }
+        line1_spans.push(Span::styled(
+            format!(
+                "  {}",
+                Self::format_estimated_tokens(session.estimated_tokens)
+            ),
+            Style::default().fg(Self::estimated_tokens_color(session.estimated_tokens)),
+        ));
         let line1 = Line::from(line1_spans);
 
-        let tokens_display = Self::format_estimated_tokens(session.estimated_tokens);
-        let line2 = if session.message_count > 0
-            && session.user_message_count == 0
-            && session.assistant_message_count == 0
-        {
-            Line::from(vec![
-                Span::styled("     ", Style::default()),
-                Span::styled(
-                    format!("{}", session.message_count),
-                    Style::default().fg(user_clr),
-                ),
-                Span::styled(" messages", Style::default().fg(dimmer)),
-                Span::styled(" · ", Style::default().fg(dimmer)),
-                Span::styled(tokens_display, Style::default().fg(dimmer)),
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled("     ", Style::default()),
-                Span::styled(
-                    format!("{}", session.user_message_count),
-                    Style::default().fg(user_clr),
-                ),
-                Span::styled(" user", Style::default().fg(dimmer)),
-                Span::styled(" · ", Style::default().fg(dimmer)),
-                Span::styled(
-                    format!("{}", session.assistant_message_count),
-                    Style::default().fg(rgb(129, 199, 132)),
-                ),
-                Span::styled(" assistant", Style::default().fg(dimmer)),
-                Span::styled(" · ", Style::default().fg(dimmer)),
-                Span::styled(tokens_display, Style::default().fg(dimmer)),
-            ])
-        };
-
-        let dir_part = if let Some(ref dir) = session.working_dir {
-            format!("  📁 {}", compact_dir(dir))
-        } else {
-            String::new()
-        };
-        let dir_style = Style::default().fg(if same_dir { same_dir_clr } else { dimmer });
-        let mut line3_spans = vec![
-            Span::styled("     ", Style::default()),
-            Span::styled(
-                format!("active {}", active_ago),
-                Style::default().fg(dimmer),
-            ),
-        ];
-        if !dir_part.is_empty() {
-            line3_spans.extend(Self::highlight_spans(
-                &dir_part,
-                &highlight_tokens,
-                dir_style,
-            ));
-        }
-        let line3 = Line::from(line3_spans);
-
-        let mut rows = vec![line1, line2];
-        if let Some(prompt) = session.first_user_prompt.as_deref().map(str::trim)
-            && !prompt.is_empty()
-        {
-            let prompt = prompt.replace('\n', " ");
-            let prompt_display = if prompt.chars().count() > 72 {
-                format!("{}...", safe_truncate(&prompt, 69))
+        // Identity and tokens above, directory and last activity below.
+        // The final span of each row is reserved before truncating its left side.
+        let mut detail_spans = vec![Span::raw("  ")];
+        if let Some(dir) = session.working_dir.as_deref() {
+            let directory_icon = if session.server_icon.as_deref() == Some("☁") {
+                "☁"
             } else {
-                prompt
+                "📁"
             };
-            let mut prompt_spans = vec![
-                Span::styled("     ", Style::default()),
-                Span::styled("prompt: ", Style::default().fg(dimmer)),
-            ];
-            prompt_spans.extend(Self::highlight_spans(
-                &prompt_display,
+            detail_spans.extend(Self::highlight_spans(
+                &format!("{directory_icon} {}", compact_dir(dir)),
                 &highlight_tokens,
-                Style::default().fg(rgb(180, 180, 220)),
+                Style::default().fg(if same_dir { same_dir_clr } else { dim }),
             ));
-            rows.push(Line::from(prompt_spans));
+        } else {
+            detail_spans.push(Span::styled("No directory", Style::default().fg(dimmer)));
         }
-        rows.push(line3);
+        let activity = format!("  {active_ago}");
+        detail_spans.push(Span::styled(activity, Style::default().fg(dim)));
+        let mut rows = vec![line1, Line::from(detail_spans)];
         if let Some(reason_line) = Self::crash_reason_line(session) {
             rows.push(reason_line);
         }
-        rows.push(Line::from(""));
 
         rows
     }
@@ -431,19 +335,92 @@ impl SessionPicker {
         session: &SessionInfo,
         is_selected: bool,
         spinner_frame: usize,
+        striped: bool,
+        width: usize,
     ) -> ListItem<'static> {
         let batch_row_bg: Color = rgb(36, 18, 18);
         let in_batch_restore = self.crashed_session_ids.contains(&session.id);
-        let rows = self.render_session_item_lines_at_frame(session, is_selected, spinner_frame);
+        let rows: Vec<_> = self
+            .render_session_item_lines_at_frame(session, is_selected, spinner_frame)
+            .into_iter()
+            .enumerate()
+            .map(|(index, mut line)| {
+                if index < 2 {
+                    let Some(suffix) = line.spans.pop() else {
+                        return line;
+                    };
+                    // Tiny terminals prioritize a truncated identity/directory.
+                    if suffix.width() + 8 <= width {
+                        let left_width = width - suffix.width();
+                        let mut left = jcode_tui_render::truncate_line_with_ellipsis_to_width(
+                            &line, left_width,
+                        );
+                        left.spans
+                            .push(Span::raw(" ".repeat(left_width - left.width())));
+                        left.spans.push(suffix);
+                        return left;
+                    }
+                    line.spans.push(suffix);
+                }
+                jcode_tui_render::truncate_line_with_ellipsis_to_width(&line, width)
+            })
+            .collect();
         let mut item = ListItem::new(rows);
         if in_batch_restore && !is_selected {
             item = item.style(Style::default().bg(batch_row_bg));
+        } else if striped {
+            item = item.style(Style::default().bg(rgb(28, 30, 34)));
         }
         item
     }
 
     pub(super) fn render_session_list(&mut self, frame: &mut Frame, area: Rect) {
+        self.render_session_list_impl(frame, area, true);
+    }
+
+    fn list_session_at(&self, index: usize) -> Option<&SessionInfo> {
+        self.item_to_session
+            .get(index)
+            .copied()
+            .flatten()
+            .and_then(|index| self.visible_sessions.get(index).copied())
+            .and_then(|session_ref| self.session_by_ref(session_ref))
+    }
+
+    pub(super) fn render_session_list_impl(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        virtualize: bool,
+    ) {
         self.poll_transcript_search();
+        // List rows never wrap. Determine exact heights without formatting the
+        // offscreen titles, prompts, paths, timestamps, or highlighted spans.
+        let mut item_heights: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                if !matches!(item, PickerItem::Session) {
+                    return 1;
+                }
+                self.list_session_at(index).map_or(1, |session| {
+                    2 + usize::from(matches!(session.status, SessionStatus::Crashed { .. }))
+                })
+            })
+            .collect();
+        let inner_height = area.height.saturating_sub(2) as usize;
+        let virtualize = virtualize && self.loading_message.is_none() && !self.items.is_empty();
+        let visible = if virtualize {
+            performance::visible_item_bounds(
+                &item_heights,
+                self.list_state.selected(),
+                self.list_state.offset(),
+                inner_height,
+            )
+        } else {
+            0..self.items.len()
+        };
         let server_color: Color = rgb(255, 200, 100);
         let dim: Color = rgb(100, 100, 100);
         let spinner_frame = Self::running_spinner_frame();
@@ -485,6 +462,8 @@ impl SessionPicker {
             self.items
                 .iter()
                 .enumerate()
+                .skip(visible.start)
+                .take(visible.len())
                 .map(|(idx, item)| {
                     let is_selected = self.list_state.selected() == Some(idx);
 
@@ -549,15 +528,19 @@ impl SessionPicker {
                             ListItem::new(vec![line1])
                         }
                         PickerItem::Session => self
-                            .item_to_session
-                            .get(idx)
-                            .and_then(|session_idx| {
-                                session_idx
-                                    .and_then(|i| self.visible_sessions.get(i).copied())
-                                    .and_then(|session_ref| self.session_by_ref(session_ref))
-                            })
+                            .list_session_at(idx)
                             .map(|session| {
-                                self.render_session_item(session, is_selected, spinner_frame)
+                                // Use the filtered session ordinal, not the viewport row,
+                                // so headers and scrolling do not change stripe parity.
+                                let striped =
+                                    self.item_to_session[idx].is_some_and(|index| index % 2 == 1);
+                                self.render_session_item(
+                                    session,
+                                    is_selected,
+                                    spinner_frame,
+                                    striped,
+                                    area.width.saturating_sub(3) as usize,
+                                )
                             })
                             .unwrap_or_else(|| ListItem::new(Line::from(""))),
                     }
@@ -690,13 +673,19 @@ impl SessionPicker {
         // its own line count (no wrapping), so summing item heights gives the
         // exact content height, and a prefix sum maps the scroll offset (first
         // visible item index) to a rendered-row offset for the scrollbar thumb.
-        let item_heights: Vec<usize> = items.iter().map(|item| item.height().max(1)).collect();
+        if !virtualize {
+            item_heights = items.iter().map(|item| item.height().max(1)).collect();
+        }
         let total_item_rows: usize = item_heights.iter().sum();
-        let inner_height = area.height.saturating_sub(2) as usize;
         let show_scrollbar =
             super::super::ui::native_scrollbar_visible(true, total_item_rows, inner_height);
 
         let list = List::new(items)
+            // Reserve the rail even on unselected rows so moving focus never
+            // shifts text. A quiet green-gray fill blends with the zebra rows.
+            .highlight_symbol("▌")
+            .repeat_highlight_symbol(true)
+            .highlight_spacing(ratatui::widgets::HighlightSpacing::Always)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
@@ -714,11 +703,25 @@ impl SessionPicker {
                 Style::default().fg(rgb(150, 150, 160))
             } else {
                 Style::default()
-                    .bg(rgb(40, 44, 52))
+                    .fg(rgb(140, 220, 160))
+                    .bg(rgb(36, 43, 42))
                     .add_modifier(Modifier::BOLD)
             });
 
-        frame.render_stateful_widget(list, area, &mut self.list_state);
+        if virtualize {
+            let mut visible_state = ListState::default().with_selected(
+                self.list_state
+                    .selected()
+                    .filter(|index| visible.contains(index))
+                    .map(|index| index - visible.start),
+            );
+            frame.render_stateful_widget(list, area, &mut visible_state);
+            if inner_height > 0 && area.width > 2 {
+                *self.list_state.offset_mut() = visible.start + visible_state.offset();
+            }
+        } else {
+            frame.render_stateful_widget(list, area, &mut self.list_state);
+        }
 
         // Draw the scrollbar inside the right border, after the list has updated
         // its scroll offset for this frame. Translate the first-visible item index

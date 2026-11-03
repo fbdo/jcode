@@ -383,6 +383,7 @@ pub(super) fn session_matches_query(session: &SessionInfo, query: &str) -> bool 
 /// This intentionally avoids transcript file I/O. Transcript-backed content can
 /// still become searchable after preview load because the picker refreshes the
 /// session's cached `search_index` from the loaded preview.
+#[cfg(test)]
 pub(super) fn session_matches_picker_query(session: &SessionInfo, query: &str) -> bool {
     let tokens = search_query_tokens(query);
     tokens.is_empty()
@@ -741,6 +742,8 @@ fn push_preview_message(preview: &mut Vec<PreviewMessage>, role: &str, content: 
         content: content.to_string(),
         tool_calls: Vec::new(),
         tool_data: None,
+        duration_secs: None,
+        title: None,
         timestamp: None,
     });
     if preview.len() > PREVIEW_MESSAGE_LIMIT {
@@ -1582,11 +1585,14 @@ pub(super) fn build_messages_preview_with_offset(
     let preview = rendered
         .into_iter()
         .skip(skip)
+        .map(crate::tui::DisplayMessage::from_rendered_message)
         .map(|msg| PreviewMessage {
             role: msg.role,
             content: msg.content,
             tool_calls: msg.tool_calls,
             tool_data: msg.tool_data,
+            duration_secs: msg.duration_secs,
+            title: msg.title,
             timestamp: None,
         })
         .collect();
@@ -1856,7 +1862,13 @@ fn load_sessions_inner(bypass_cache: bool) -> Result<Vec<SessionInfo>> {
             sessions.extend(saved_sessions.into_iter().flatten());
         }
 
-        (sessions, external_handle.join().unwrap_or_default())
+        (
+            sessions,
+            external_handle.join().unwrap_or_else(|_| {
+                crate::logging::debug("External session loader thread failed");
+                Vec::new()
+            }),
+        )
     });
     sessions.extend(external_sessions);
 
