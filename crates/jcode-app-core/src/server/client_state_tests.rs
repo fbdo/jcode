@@ -418,6 +418,95 @@ async fn session_activity_snapshot_uses_fallback_when_no_live_connection_is_mark
 }
 
 #[tokio::test]
+#[expect(
+    clippy::await_holding_lock,
+    reason = "serialize test storage and intentionally keep Agent busy"
+)]
+async fn turn_identity_busy_history_bootstraps_active_turn_and_idle_watermark() {
+    let _env_guard = crate::storage::lock_test_env();
+    let temp_home = tempfile::TempDir::new().unwrap();
+    let prev_home = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", temp_home.path());
+    let session_id = "session_identity_busy_history";
+    let provider: Arc<dyn Provider> = Arc::new(MockProvider(None));
+    let agent = Arc::new(Mutex::new(Agent::new_with_session(
+        provider.clone(),
+        Registry::empty(),
+        crate::session::Session::create_with_id(session_id.into(), None, None),
+        None,
+    )));
+    let sessions = Arc::new(crate::server::session_manager::SessionManager::from_agents(
+        HashMap::from([(session_id.to_string(), agent.clone())]),
+    ));
+    let connections = Arc::new(RwLock::new(HashMap::new()));
+    let count = Arc::new(RwLock::new(1));
+    let (stream, mut peer) = crate::transport::stream_pair().unwrap();
+    let (_, write_half) = stream.into_split();
+    let writer = Arc::new(Mutex::new(write_half));
+    let busy = agent.lock().await;
+    let lease = busy.claim_server_turn().unwrap();
+    let expected = lease.identity().clone();
+    let request = || {
+        handle_get_history(
+            1,
+            session_id,
+            true,
+            &agent,
+            &provider,
+            &sessions,
+            &connections,
+            &count,
+            &writer,
+            "test",
+            "test",
+            None,
+            false,
+            true,
+            None,
+        )
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(2), request())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(lease);
+    tokio::time::timeout(std::time::Duration::from_secs(2), request())
+        .await
+        .unwrap()
+        .unwrap();
+    drop(busy);
+    drop(writer);
+    let mut bytes = Vec::new();
+    peer.read_to_end(&mut bytes).await.unwrap();
+    let events: Vec<crate::protocol::ServerEvent> = std::io::Cursor::new(bytes)
+        .lines()
+        .map(|line| serde_json::from_str(&line.unwrap()).unwrap())
+        .collect();
+    assert_eq!(events.len(), 4);
+    assert!(
+        matches!(&events[0], crate::protocol::ServerEvent::TurnState { runtime_generation, turn_id: Some(id), latest_turn_id, .. }
+        if runtime_generation == &expected.runtime_generation && *id == expected.turn_id && *latest_turn_id == expected.turn_id)
+    );
+    assert!(matches!(
+        &events[1],
+        crate::protocol::ServerEvent::History { .. }
+    ));
+    assert!(
+        matches!(&events[2], crate::protocol::ServerEvent::TurnState { runtime_generation, turn_id: None, latest_turn_id, .. }
+        if runtime_generation == &expected.runtime_generation && *latest_turn_id == expected.turn_id)
+    );
+    assert!(matches!(
+        &events[3],
+        crate::protocol::ServerEvent::History { .. }
+    ));
+    if let Some(home) = prev_home {
+        crate::env::set_var("JCODE_HOME", home);
+    } else {
+        crate::env::remove_var("JCODE_HOME");
+    }
+}
+
+#[tokio::test]
 async fn handle_get_history_falls_back_to_persisted_snapshot_when_agent_is_busy() {
     for tier in [Some("priority"), Some("flex"), None] {
         assert_history_service_tier_and_pdf_capability(tier, true, false, false).await;
@@ -449,10 +538,9 @@ async fn handle_get_history_busy_fresh_session_returns_empty_without_waiting() {
         !snapshot_path.exists(),
         "fresh empty sessions are not persisted"
     );
-    let sessions = Arc::new(RwLock::new(HashMap::from([(
-        session_id.to_string(),
-        agent.clone(),
-    )])));
+    let sessions = Arc::new(crate::server::session_manager::SessionManager::from_agents(
+        HashMap::from([(session_id.to_string(), agent.clone())]),
+    ));
     let connections = Arc::new(RwLock::new(HashMap::new()));
     let count = Arc::new(RwLock::new(1));
     let (stream, mut peer) = crate::transport::stream_pair().unwrap();
@@ -477,6 +565,7 @@ async fn handle_get_history_busy_fresh_session_returns_empty_without_waiting() {
             "test",
             None,
             false,
+            false,
             None,
         )
     };
@@ -500,12 +589,16 @@ async fn handle_get_history_busy_fresh_session_returns_empty_without_waiting() {
     );
 
     // A nonexistent session is not the same as a registered, unsaved one.
-    sessions.write().await.clear();
+    sessions.clear_for_test().await;
     assert!(request(4, false).await.is_err());
+    // Publication captures the runtime observer from an idle Agent. Preserve
+    // that invariant, then hold the Agent busy again for the corruption check.
+    drop(busy_guard);
     sessions
-        .write()
+        .register_new(session_id.into(), agent.clone())
         .await
-        .insert(session_id.into(), agent.clone());
+        .unwrap();
+    let busy_guard = agent.lock().await;
     // Corrupt snapshots must not silently become empty history either.
     std::fs::create_dir_all(snapshot_path.parent().unwrap()).unwrap();
     std::fs::write(&snapshot_path, b"not valid session json").unwrap();
@@ -648,10 +741,9 @@ async fn assert_history_service_tier_and_pdf_capability(
     session.save().expect("restore persisted history snapshot");
     let busy_guard = if busy { Some(agent.lock().await) } else { None };
 
-    let sessions = Arc::new(RwLock::new(HashMap::from([(
-        session_id.to_string(),
-        Arc::clone(&agent),
-    )])));
+    let sessions = Arc::new(crate::server::session_manager::SessionManager::from_agents(
+        HashMap::from([(session_id.to_string(), Arc::clone(&agent))]),
+    ));
     let client_connections = Arc::new(RwLock::new(HashMap::<String, ClientConnectionInfo>::new()));
     let client_count = Arc::new(RwLock::new(1usize));
 
@@ -684,6 +776,7 @@ async fn assert_history_service_tier_and_pdf_capability(
             super::HistoryPayloadMode::Full,
             true,
             supports_pdf_panels,
+            false,
             None,
         );
         tokio::pin!(history);
@@ -715,6 +808,7 @@ async fn assert_history_service_tier_and_pdf_capability(
                 "🔥",
                 None,
                 supports_pdf_panels,
+                false,
                 None,
             ),
         )

@@ -103,6 +103,12 @@ impl SessionPicker {
     /// Whether a screen coordinate falls inside the preview pane (used by the
     /// host App to route wheel events into the shared scroll-momentum queue).
     pub fn mouse_over_preview(&self, col: u16, row: u16) -> bool {
+        if self
+            .reserved_panel_area
+            .is_some_and(|r| Self::point_in_rect(col, row, r))
+        {
+            return false;
+        }
         self.last_preview_area
             .map(|r| Self::point_in_rect(col, row, r))
             .unwrap_or(false)
@@ -197,11 +203,11 @@ impl SessionPicker {
     ) -> bool {
         match code {
             KeyCode::Char('h') | KeyCode::Left => {
-                self.focus = PaneFocus::Sessions;
+                self.focus = PaneFocus::Preview;
                 true
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                self.focus = PaneFocus::Preview;
+                self.focus = PaneFocus::Sessions;
                 true
             }
             KeyCode::Tab => {
@@ -241,12 +247,15 @@ impl SessionPicker {
 
     /// Handle mouse events when used as an overlay
     pub fn handle_overlay_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        let at = std::time::Instant::now();
+        let before = self.latency_selection_id();
         match mouse.kind {
             MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => {
                 self.handle_mouse_scroll(mouse.column, mouse.row, mouse.kind);
             }
             _ => {}
         }
+        self.latency_input_complete(before, at);
     }
 
     /// Apply a single line of preview scroll in `direction` (-1 up, +1 down) and
@@ -274,11 +283,14 @@ impl SessionPicker {
 
     /// Step the session selection for a list-pane wheel event.
     pub fn step_list_selection(&mut self, direction: i16) {
+        let at = std::time::Instant::now();
+        let before = self.latency_selection_id();
         if direction < 0 {
             self.previous();
         } else if direction > 0 {
             self.next();
         }
+        self.latency_input_complete(before, at);
     }
 
     /// Current preview scroll offset, exposed for tests that assert scroll

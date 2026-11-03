@@ -10,11 +10,7 @@ use anyhow::Result;
 use std::path::Path;
 
 /// The server's live sessions, keyed by session id.
-type LiveSessions = std::sync::Arc<
-    tokio::sync::RwLock<
-        std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<crate::agent::Agent>>>,
-    >,
->;
+type LiveSessions = super::SessionAgents;
 
 /// Resolve the requested definition, or `Ok(None)` when none was requested.
 /// An unknown name is an error listing the valid ones.

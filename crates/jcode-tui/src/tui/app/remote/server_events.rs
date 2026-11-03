@@ -1,4 +1,9 @@
 use super::*;
+
+#[cfg(test)]
+#[path = "turn_identity_tests.rs"]
+mod turn_identity_tests;
+
 use crate::tool::selfdev::ReloadContext;
 use crate::tui::TuiState;
 use crate::tui::app as app_mod;
@@ -422,6 +427,175 @@ pub(in crate::tui::app) fn handle_server_event(
     event: ServerEvent,
     remote: &mut impl RemoteEventState,
 ) -> bool {
+    let (event, identity) = match event {
+        ServerEvent::TurnState {
+            session_id,
+            runtime_generation,
+            turn_id,
+            latest_turn_id,
+        } => {
+            if app.remote_turn_fence.bootstrap(
+                session_id,
+                runtime_generation,
+                latest_turn_id,
+                turn_id,
+            ) {
+                if !app
+                    .deferred_stream_done_identity
+                    .as_ref()
+                    .is_some_and(|identity| app.remote_turn_fence.is_latest(identity))
+                {
+                    app.deferred_stream_done_id = None;
+                    app.deferred_stream_done_identity = None;
+                }
+                if app.remote_turn_fence.active.is_none()
+                    && app.current_message_id.is_none()
+                    && app.deferred_stream_done_id.is_none()
+                {
+                    let changed = app.is_processing;
+                    app.is_processing = false;
+                    app.status = ProcessingStatus::Idle;
+                    app.processing_started = None;
+                    app.remote_resume_activity = None;
+                    return changed;
+                }
+            }
+            return false;
+        }
+        ServerEvent::TurnStarted { identity } => {
+            let same_turn = app.remote_turn_fence.accepts(&identity);
+            if !app.remote_turn_fence.start(&identity) {
+                return false;
+            }
+            if !same_turn {
+                app.deferred_stream_done_id = None;
+                app.deferred_stream_done_identity = None;
+            }
+            app.is_processing = true;
+            app.processing_started.get_or_insert_with(Instant::now);
+            app.last_stream_activity = Some(Instant::now());
+            app.status = ProcessingStatus::Streaming;
+            return true;
+        }
+        ServerEvent::TurnEvent { identity, event } => {
+            let paced_replay = matches!(&*event, ServerEvent::Done { .. })
+                && app.deferred_stream_done_identity.as_ref() == Some(&identity)
+                && app.remote_turn_fence.is_latest(&identity);
+            if !app.remote_turn_fence.accepts(&identity)
+                && !paced_replay
+                && !(matches!(&*event, ServerEvent::Interrupted)
+                    && app.remote_turn_fence.is_latest(&identity))
+            {
+                return false;
+            }
+            // Nested scopes could otherwise bypass this one validation boundary.
+            if matches!(
+                &*event,
+                ServerEvent::TurnState { .. }
+                    | ServerEvent::TurnStarted { .. }
+                    | ServerEvent::TurnEvent { .. }
+            ) {
+                return false;
+            }
+            (*event, Some(identity))
+        }
+        event => (event, None),
+    };
+    if identity.is_none()
+        && app.remote_turn_fence.scoped()
+        && matches!(
+            &event,
+            ServerEvent::Interrupted
+                | ServerEvent::TextDelta { .. }
+                | ServerEvent::TextReplace { .. }
+                | ServerEvent::TextSuffixReplace { .. }
+                | ServerEvent::ReasoningDelta { .. }
+                | ServerEvent::ReasoningDone { .. }
+                | ServerEvent::ToolStart { .. }
+                | ServerEvent::ToolInput { .. }
+                | ServerEvent::ToolExec { .. }
+                | ServerEvent::ToolDone { .. }
+                | ServerEvent::BatchProgress { .. }
+                | ServerEvent::ConnectionPhase { .. }
+                | ServerEvent::StatusDetail { .. }
+        )
+    {
+        return false;
+    }
+    let terminal = matches!(&event, ServerEvent::Done { .. } | ServerEvent::Error { .. });
+    // Legacy control errors still use Error. Let their request-owned handlers
+    // run, but never let an unscoped terminal settle an identity-aware turn.
+    if terminal && identity.is_none() && app.remote_turn_fence.scoped() {
+        if let ServerEvent::Error { id, message, .. } = &event {
+            if app.pending_agent_model_request_id == Some(*id) {
+                return handle_server_event_inner(app, event, remote);
+            }
+            if remote.finish_runtime_command(*id) {
+                app.push_display_message(DisplayMessage::error(message.clone()));
+                return true;
+            }
+        }
+        if let ServerEvent::Done { id } | ServerEvent::Error { id, .. } = &event {
+            if app.current_message_id == Some(*id) {
+                if app.remote_turn_fence.active.is_none() {
+                    // Validation/auth failures and synthetic control completions
+                    // occur before turn acceptance, so they have no turn scope.
+                    let rejected_id = *id;
+                    let redraw = handle_server_event_inner(app, event, remote);
+                    if !app.is_processing && app.current_message_id == Some(rejected_id) {
+                        app.current_message_id = None;
+                    }
+                    return redraw;
+                }
+                if let ServerEvent::Error { message, .. } = &event {
+                    let recovered = recover_rejected_queued_continuation(app);
+                    if !recovered {
+                        app.restore_failed_input_to_box();
+                    }
+                    app.clear_pending_remote_retry();
+                    app.current_message_id = None;
+                    remote.clear_pending();
+                    // The rejected request never acquired this running turn.
+                    // Preserve its stream, timing and identity-owned busy state.
+                    app.is_processing = true;
+                    if matches!(app.status, ProcessingStatus::Sending) {
+                        app.status = ProcessingStatus::Thinking(Instant::now());
+                    }
+                    app.remote_resume_activity = Some(RemoteResumeActivity {
+                        session_id: app.remote_session_id.as_deref().unwrap_or("").to_owned(),
+                        observed_at: Instant::now(),
+                        current_tool_name: None,
+                    });
+                    app.push_display_message(DisplayMessage::error(message.clone()));
+                    return true;
+                }
+            }
+            if app.usage_reset.invalidate_requests.remove(id).is_some() {
+                app.usage_reset.refresh_usage = true;
+                return true;
+            }
+        }
+        return false;
+    }
+    let redraw = handle_server_event_inner(app, event, remote);
+    if let Some(identity) = identity
+        && terminal
+    {
+        if app.deferred_stream_done_id.is_some() {
+            app.deferred_stream_done_identity = Some(identity);
+        } else {
+            app.remote_turn_fence.complete(&identity);
+            app.deferred_stream_done_identity = None;
+        }
+    }
+    redraw
+}
+
+fn handle_server_event_inner(
+    app: &mut App,
+    event: ServerEvent,
+    remote: &mut impl RemoteEventState,
+) -> bool {
     // Pure presence/catalog/telemetry traffic must not defeat a 30-minute idle
     // period. Every other event may mutate the transcript or start active work.
     if !matches!(
@@ -464,10 +638,33 @@ pub(in crate::tui::app) fn handle_server_event(
         return true;
     }
 
+    // Control failures use the shared Error wire shape, but must not end an
+    // unrelated active turn, trigger rate-limit retry, or discard draft input.
+    if let ServerEvent::Error { id, message, .. } = &event
+        && remote.finish_runtime_command(*id)
+    {
+        app.push_display_message(DisplayMessage::error(message.clone()));
+        return true;
+    }
+
     // Control responses are transcript notices, never conversation-turn activity.
-    if let ServerEvent::RuntimeCommandResult { message, .. } = event {
+    if let ServerEvent::RuntimeCommandResult { id, message, .. } = event {
+        remote.finish_runtime_command(id);
         app.push_display_message(DisplayMessage::system(message));
         return true;
+    }
+
+    // Request-scoped terminals cannot settle a different locally owned turn.
+    // Resumed observer turns have no request ID and retain legacy settlement.
+    if let ServerEvent::Done { id } | ServerEvent::Error { id, .. } = &event
+        && app.current_message_id.is_some_and(|current| current != *id)
+        && app.pending_agent_model_request_id != Some(*id)
+    {
+        crate::logging::debug(&format!(
+            "Ignoring unrelated terminal id={} while current_message_id={:?}",
+            id, app.current_message_id
+        ));
+        return false;
     }
 
     let eager_stream_redraw = !crate::perf::tui_policy().enable_decorative_animations;
@@ -1162,6 +1359,9 @@ pub(in crate::tui::app) fn handle_server_event(
             app.offer_guardrail_reroute();
             true
         }
+        ServerEvent::TurnState { .. }
+        | ServerEvent::TurnStarted { .. }
+        | ServerEvent::TurnEvent { .. } => false,
         ServerEvent::Done { id } => {
             let mut auto_poked = false;
             let mut completed_current_message = false;
@@ -1308,13 +1508,27 @@ pub(in crate::tui::app) fn handle_server_event(
                 && recover_rejected_queued_continuation(app)
             {
                 remote.clear_pending();
+                app.current_message_id = None;
+                if app.remote_turn_fence.scoped() && app.remote_turn_fence.active.is_none() {
+                    // Done was already observed. The owner can still hold its
+                    // finalization pin briefly, but no second terminal will
+                    // arrive to release this queue. Retry from idle instead.
+                    app.is_processing = false;
+                    app.status = ProcessingStatus::Idle;
+                    app.processing_started = None;
+                    app.remote_resume_activity = None;
+                    app.pending_queued_dispatch = false;
+                    app.remote_queue_retry_not_before =
+                        Some(Instant::now() + Duration::from_millis(100));
+                    app.set_status_notice("Server finalizing; follow-up stays queued");
+                    return true;
+                }
                 app.is_processing = true;
                 app.status = ProcessingStatus::Thinking(Instant::now());
-                app.current_message_id = None;
                 app.processing_started.get_or_insert_with(Instant::now);
                 app.last_stream_activity = Some(Instant::now());
                 app.remote_resume_activity = Some(RemoteResumeActivity {
-                    session_id: app.remote_session_id.clone().unwrap_or_default(),
+                    session_id: app.remote_session_id.as_deref().unwrap_or("").to_owned(),
                     observed_at: Instant::now(),
                     current_tool_name: None,
                 });
@@ -1882,13 +2096,14 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.remote_available_service_tiers = None;
                 app.usage_reset.openai_quota_rejected = false;
             }
-            // The initial Subscribe snapshot predates an early startup Message
-            // sent on the same ordered connection. Adopting its session id must
-            // not make that in-flight request idle or discard its retry payload.
+            // The initial history snapshot predates an early Message sent on
+            // the same ordered connection, including hidden reload continuations
+            // which have no pending_startup_prompt_echo. Adopting its session id
+            // must not make that in-flight request idle or discard its retry payload.
             // An actual session switch must still reset the old session's state.
             let preserve_startup_send = prev_session_id.is_none()
                 && !remote.has_loaded_history()
-                && app.pending_startup_prompt_echo.is_some()
+                && app.is_processing
                 && app.current_message_id.is_some();
 
             if session_changed {
@@ -2140,6 +2355,18 @@ pub(in crate::tui::app) fn handle_server_event(
 
             let should_apply_history_payload = session_changed || !remote.has_loaded_history();
             if should_apply_history_payload {
+                let activity = if app.remote_turn_fence.scoped() {
+                    app.remote_turn_fence.active.as_ref().map(|_| {
+                        crate::protocol::SessionActivitySnapshot {
+                            is_processing: true,
+                            current_tool_name: activity
+                                .as_ref()
+                                .and_then(|activity| activity.current_tool_name.clone()),
+                        }
+                    })
+                } else {
+                    activity
+                };
                 if let Some(activity) = activity.filter(|activity| activity.is_processing) {
                     let current_tool_name = activity.current_tool_name.clone();
                     app.is_processing = true;
@@ -2610,6 +2837,7 @@ pub(in crate::tui::app) fn handle_server_event(
             app.remote_model_switch_in_flight = false;
             let automatic_route = app.pending_automatic_failover_route.take();
             if let Some(err) = error {
+                let account_switch_failed = app.pending_account_switch_target.take().is_some();
                 if let Some(prepared) = app.pending_prompt_after_model_switch.take() {
                     super::input_dispatch::restore_prepared_remote_input(app, prepared);
                 }
@@ -2621,12 +2849,22 @@ pub(in crate::tui::app) fn handle_server_event(
                 app.push_display_message(DisplayMessage::error(
                     crate::tui::app::model_context::model_switch_failure_message(&err, true),
                 ));
-                app.set_status_notice("Model switch failed");
+                app.set_status_notice(if account_switch_failed {
+                    "Account switch failed"
+                } else {
+                    "Model switch failed"
+                });
             } else {
                 // ModelChanged predates capability metadata. Fetch the typed
                 // History catalog after a successful model/account switch.
                 app.model_catalog_after_history = true;
+                let account_actually_changed = !app.remote_session_facts_provisional
+                    && app.remote_provider_model.is_some()
+                    && (app.remote_provider_oauth_account_label != provider_oauth_account_label
+                        || app.remote_provider_oauth_email != provider_oauth_email
+                        || app.remote_resolved_credential != resolved_credential);
                 if app.remote_provider_model.as_deref() != Some(model.as_str())
+                    || app.remote_provider_oauth_account_label != provider_oauth_account_label
                     || app.remote_provider_oauth_email != provider_oauth_email
                     || app.remote_resolved_credential != resolved_credential
                     || provider_name
@@ -2655,6 +2893,43 @@ pub(in crate::tui::app) fn handle_server_event(
                 if let Some(selection) = automatic_route {
                     app.session.route_api_method = Some(selection.api_method);
                 }
+                let acknowledged_provider = app
+                    .remote_provider_name
+                    .as_deref()
+                    .and_then(jcode_provider_core::parse_provider_hint);
+                let account_switch_acknowledged = matches!(
+                    app.pending_account_switch_target.as_ref(),
+                    Some(crate::tui::AccountPickerAction::Switch { provider_id, label })
+                        if app.remote_provider_oauth_account_label.as_ref() == Some(label)
+                            && acknowledged_provider.is_some()
+                            && jcode_provider_core::parse_provider_hint(provider_id)
+                                == acknowledged_provider
+                );
+                if account_switch_acknowledged {
+                    app.pending_account_switch_target = None;
+                }
+                // Several cycles may be queued while the daemon is busy. An
+                // earlier acknowledgement updates confirmed state, but must
+                // not discard the newer target used to anchor the next cycle.
+                // Persist the daemon's label, never the optimistic target.
+                if resolved_credential == Some(jcode_provider_core::ResolvedCredential::Oauth) {
+                    let method = match acknowledged_provider {
+                        Some(jcode_provider_core::ActiveProvider::Claude) => Some("claude-oauth"),
+                        Some(jcode_provider_core::ActiveProvider::OpenAI) => Some("openai-oauth"),
+                        _ => None,
+                    };
+                    if let Some(method) = method {
+                        let route = app
+                            .remote_provider_oauth_account_label
+                            .as_deref()
+                            .map(|label| format!("{method}@{label}"))
+                            .filter(|route| {
+                                jcode_provider_core::oauth_account_label(route).is_some()
+                            })
+                            .unwrap_or_else(|| method.to_string());
+                        app.session.route_api_method = Some(route);
+                    }
+                }
                 // Always replace: a switch to a provider with no OAuth/API
                 // distinction must clear the previous route's credential too.
                 app.remote_resolved_credential = resolved_credential;
@@ -2682,9 +2957,19 @@ pub(in crate::tui::app) fn handle_server_event(
                 }
                 if model_actually_changed {
                     app.set_status_notice(format!("Model → {}", model));
+                } else if account_actually_changed || account_switch_acknowledged {
+                    let label = crate::tui::TuiState::startup_oauth_account_label(app);
+                    app.set_status_notice(match label {
+                        Some(label) => format!("Account → {}", label),
+                        None => "Account updated".to_string(),
+                    });
                 }
             }
-            false
+            // Same-model account acknowledgements change header identity too.
+            // Clear cached header preparation and request a frame even when no
+            // transcript announcement was added (including switch failures).
+            crate::tui::ui::prepare::invalidate_header_prep_cache();
+            true
         }
         ServerEvent::AccountUsage {
             anthropic, openai, ..
@@ -3359,6 +3644,96 @@ mod runtime_command_tests {
     use super::*;
     use crate::tui::app::tests::create_test_app;
     use crate::tui::backend::RemoteConnection;
+
+    #[test]
+    fn stale_terminals_cannot_settle_or_touch_newer_work() {
+        let mut app = create_test_app();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        let _guard = runtime.enter();
+        let mut remote = RemoteConnection::dummy();
+        app.is_processing = true;
+        app.current_message_id = Some(99);
+        app.status = ProcessingStatus::Sending;
+        app.input = "unsent draft".into();
+        app.replace_streaming_text("partial response".into());
+        let activity = app.last_stream_activity;
+        for event in [
+            ServerEvent::Done { id: 98 },
+            ServerEvent::Error {
+                id: 98,
+                message: "late failure".into(),
+                retry_after_secs: None,
+            },
+            ServerEvent::Done { id: 100 },
+        ] {
+            assert!(!handle_server_event(&mut app, event, &mut remote));
+            assert!(app.is_processing);
+            assert_eq!(app.current_message_id, Some(99));
+            assert!(matches!(app.status, ProcessingStatus::Sending));
+            assert_eq!(app.input, "unsent draft");
+            assert_eq!(app.streaming_text(), "partial response");
+            assert_eq!(app.last_stream_activity, activity);
+        }
+        // Positive control: current terminal still settles the active turn.
+        handle_server_event(&mut app, ServerEvent::Done { id: 99 }, &mut remote);
+        assert!(!app.is_processing);
+        assert_eq!(app.current_message_id, None);
+    }
+
+    #[test]
+    fn runtime_command_error_preserves_active_turn_and_clears_request_ownership() {
+        let mut app = create_test_app();
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            let mut remote = RemoteConnection::dummy();
+            let id = remote
+                .runtime_command("config", vec!["invalid".into()])
+                .await
+                .unwrap();
+            app.is_processing = true;
+            app.pending_turn = true;
+            app.current_message_id = Some(99);
+            app.status = ProcessingStatus::Sending;
+            app.input = "unsent draft".into();
+            app.replace_streaming_text("partial response".into());
+            let activity = app.last_stream_activity;
+            assert!(handle_server_event(
+                &mut app,
+                ServerEvent::Error {
+                    id,
+                    message: "Session is busy. Retry this command after the current turn.".into(),
+                    retry_after_secs: None,
+                },
+                &mut remote
+            ));
+            assert!(app.is_processing);
+            assert!(app.pending_turn);
+            assert_eq!(app.current_message_id, Some(99));
+            assert!(matches!(app.status, ProcessingStatus::Sending));
+            assert_eq!(app.input, "unsent draft");
+            assert_eq!(app.streaming_text(), "partial response");
+            assert_eq!(app.last_stream_activity, activity);
+            assert_eq!(app.display_messages.last().unwrap().role, "error");
+            assert!(!remote.finish_runtime_command(id));
+
+            let id = remote
+                .runtime_command("poke", vec!["status".into()])
+                .await
+                .unwrap();
+            assert!(handle_server_event(
+                &mut app,
+                ServerEvent::RuntimeCommandResult {
+                    id,
+                    command: "poke".into(),
+                    data: serde_json::json!({}),
+                    message: "Stopped".into(),
+                },
+                &mut remote
+            ));
+            assert!(!remote.finish_runtime_command(id));
+            assert!(app.is_processing);
+        });
+    }
 
     #[test]
     fn runtime_command_result_renders_without_starting_or_disrupting_turn() {
