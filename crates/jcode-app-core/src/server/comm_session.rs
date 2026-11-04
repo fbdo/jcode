@@ -365,7 +365,7 @@ pub(super) async fn spawn_swarm_agent(
         resolve_spawn_working_dir(None, req_session_id, sessions, swarm_members).await;
     let definition_dir = coordinator_dir.or_else(|| resolved_working_dir.clone());
     let definition =
-        super::swarm_agent_defs::resolve(agent.as_deref(), definition_dir.as_deref())?;
+        super::swarm::swarm_agent_defs::resolve(agent.as_deref(), definition_dir.as_deref())?;
     let coordinator = resolve_coordinator_spawn_identity(req_session_id, sessions).await;
     let coordinator_is_canary = coordinator.is_canary;
     // Capture the requesting client's terminal env so spawn hooks place the new
@@ -376,7 +376,7 @@ pub(super) async fn spawn_swarm_agent(
     let configured_swarm_model =
         session_swarm_model(req_session_id, sessions, agents_config.swarm_model.clone()).await;
     let resolved_spawn_mode = resolve_swarm_spawn_mode(spawn_mode, agents_config.swarm_spawn_mode);
-    let (applied_policy, policy_request) = super::swarm_agent_policy::for_spawn(
+    let (applied_policy, policy_request) = super::swarm::swarm_agent_policy::for_spawn(
         definition.as_ref(),
         agents_config,
         definition_dir.as_deref(),
@@ -442,7 +442,7 @@ pub(super) async fn spawn_swarm_agent(
             |session_id, cwd, selfdev_requested, provider_key| {
                 crate::session_env::inherit_session_env(req_session_id, session_id);
                 if let Some(definition) = definition.as_ref() {
-                    super::swarm_agent_defs::persist_persona(session_id, definition);
+                    super::swarm::swarm_agent_defs::persist_persona(session_id, definition);
                 }
                 if let Some(lane_id) = lane_id.as_deref() {
                     let brief = super::swarm_todo_link::seed_spawn_lane(
@@ -459,7 +459,7 @@ pub(super) async fn spawn_swarm_agent(
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
                 let context =
-                    super::swarm_hooks::spawn_context(swarm_id, req_session_id, label.as_deref())
+                    super::swarm::swarm_hooks::spawn_context(swarm_id, req_session_id, label.as_deref())
                         .with_client_terminal_env(client_terminal_env.clone());
                 spawn_visible_session_window_with_context(
                     session_id,
@@ -498,6 +498,13 @@ pub(super) async fn spawn_swarm_agent(
                 Some(Arc::clone(mcp_pool)),
                 Some(req_session_id.to_string()),
                 super::headless::HeadlessMemoryScope::RealProject,
+                // Registered before the worker's `session_start` hook fires.
+                Some(super::swarm::swarm_hooks::worker_identity(
+                    swarm_id,
+                    req_session_id,
+                    label.as_deref(),
+                    definition.as_ref().map(|d| d.name.as_str()),
+                )),
             )
             .await
             .and_then(|result_json| {
@@ -562,17 +569,36 @@ pub(super) async fn spawn_swarm_agent(
     if let Some(label_text) = label.as_deref().or(initial_message.as_deref()) {
         set_member_task_label(&new_session_id, label_text, swarm_members).await;
     }
-    super::swarm_agent_defs::StartedWorker {
-        sessions,
-        session_id: &new_session_id,
-        swarm_id,
-        coordinator_session_id: req_session_id,
-        label: label.as_deref(),
-        headless: is_headless_fallback,
-        working_dir: resolved_working_dir.as_deref(),
+    if is_headless_fallback {
+        super::swarm::swarm_agent_defs::apply_to_headless_worker(
+            sessions,
+            &new_session_id,
+            definition.as_ref(),
+            &applied_policy,
+        )
+        .await;
     }
-    .finish(definition.as_ref(), &applied_policy)
-    .await;
+    // Observers run in the coordinator's context, so use its directory rather
+    // than the worker's.
+    let coordinator_working_dir =
+        resolve_spawn_working_dir(None, req_session_id, sessions, swarm_members).await;
+    super::swarm::swarm_hooks::worker_spawned(&super::swarm::swarm_hooks::SpawnedWorker::new(
+        &new_session_id,
+        swarm_id,
+        req_session_id,
+        label.as_deref(),
+        definition.as_ref().map(|d| d.name.as_str()),
+        if is_headless_fallback {
+            if resolved_spawn_mode == SwarmSpawnMode::Inline {
+                "inline"
+            } else {
+                "headless"
+            }
+        } else {
+            "visible"
+        },
+        coordinator_working_dir.as_deref(),
+    ));
     let swarm_state = SwarmState {
         members: Arc::clone(swarm_members),
         swarms_by_id: Arc::clone(swarms_by_id),
@@ -973,8 +999,8 @@ pub(super) async fn handle_comm_stop(
         })
     };
     if let Some((old_status, running_ms, coordinator_working_dir)) = stopping_transition {
-        super::swarm_hooks::member_status_changed(
-            &super::swarm_hooks::StatusTransition {
+        super::swarm::swarm_hooks::member_status_changed(
+            &super::swarm::swarm_hooks::StatusTransition {
                 session_id: &target_session,
                 old_status: &old_status,
                 new_status: "stopped",

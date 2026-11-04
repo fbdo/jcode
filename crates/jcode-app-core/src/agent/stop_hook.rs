@@ -4,7 +4,7 @@ use crate::hooks::{StopInput, StopOutcome};
 impl Agent {
     /// [`Self::stop_hook_continues`] for streaming turns: a cap notice goes to
     /// the client as a status detail.
-    pub(super) async fn stop_hook_continues_mpsc(
+    pub(in crate::agent) async fn stop_hook_continues_mpsc(
         &mut self,
         last_assistant_message: &str,
         stop_reason: &Option<String>,
@@ -41,7 +41,7 @@ impl Agent {
     ///
     /// `notice` receives one user-visible line when the continuation cap
     /// overrides a request to continue.
-    pub(super) async fn stop_hook_continues(
+    pub(in crate::agent) async fn stop_hook_continues(
         &mut self,
         last_assistant_message: &str,
         stop_reason: &Option<String>,

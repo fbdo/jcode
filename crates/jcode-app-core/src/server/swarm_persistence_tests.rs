@@ -1087,6 +1087,7 @@ fn hook_identity_survives_a_persisted_member_reload() {
         parent_session_id: "coord".into(),
         label: Some("task".into()),
         agent_type: Some("reviewer".into()),
+        working_dir: None,
     };
     crate::hooks::register_swarm_identity(session_id, identity.clone());
     let persisted = to_persisted_member(&member, 1_000);

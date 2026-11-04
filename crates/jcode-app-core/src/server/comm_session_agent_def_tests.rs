@@ -709,6 +709,7 @@ async fn stopping_a_running_worker_fires_swarm_member_end() {
             parent_session_id: "coord".into(),
             label: Some("task".into()),
             agent_type: Some("reviewer".into()),
+            working_dir: None,
         },
     );
     let (record, previous_hook) = set_recording_hook(

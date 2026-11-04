@@ -40,10 +40,6 @@ mod skill_arguments;
 #[path = "agent_tests/stop_hook.rs"]
 mod stop_hook;
 
-#[cfg(unix)]
-#[path = "agent_tests/stop_hook.rs"]
-mod stop_hook;
-
 struct DelayedProvider {
     open_delay: Duration,
     first_event_delay: Duration,

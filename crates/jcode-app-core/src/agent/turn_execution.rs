@@ -277,7 +277,7 @@ impl Agent {
 
     /// Persist a hidden, model-visible `<system-reminder>` message at the tail
     /// of the transcript so it does not disturb the cached prompt prefix.
-    pub(super) fn append_turn_system_reminder(&mut self, reminder: &str) -> Result<()> {
+    pub(in crate::agent) fn append_turn_system_reminder(&mut self, reminder: &str) -> Result<()> {
         let reminder = reminder.trim();
         if reminder.is_empty() {
             return Ok(());

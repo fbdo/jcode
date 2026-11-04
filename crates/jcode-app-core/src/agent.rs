@@ -11,15 +11,12 @@ mod interrupts;
 mod messages;
 #[cfg(test)]
 mod model_usage_tests;
-mod prompt_hooks;
 mod prompting;
 mod provider;
 mod response_recovery;
 mod skill_activation;
 mod runtime_recovery;
-mod skill_activation;
 mod status;
-mod stop_hook;
 mod streaming;
 #[cfg(test)]
 mod swarm_reminder_tests;
