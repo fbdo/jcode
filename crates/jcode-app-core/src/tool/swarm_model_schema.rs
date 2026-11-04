@@ -35,7 +35,7 @@ pub(super) fn apply_agent_definitions_for(schema: &mut Value, user_level: Vec<(S
         return;
     };
     let mut description = String::from(
-        "For spawn: name of an agent definition for the worker (.jcode/agents or .claude/agents in the coordinator's project, or ~/.jcode/agents).",
+        "For spawn: agent definition name (coordinator's project or ~/.jcode/agents).",
     );
     if !user_level.is_empty() {
         let listing = user_level

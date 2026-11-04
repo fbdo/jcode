@@ -215,7 +215,9 @@ pub fn project_root(path: &Path) -> Result<PathBuf> {
 /// For a linked worktree whose `.git` file points at
 /// `<main>/.git/worktrees/<name>`, the main checkout root.
 fn main_checkout_of(worktree: &Path, dot_git_file: &Path) -> Option<PathBuf> {
-    let text = std::fs::read_to_string(dot_git_file).ok()?;
+    let Ok(text) = std::fs::read_to_string(dot_git_file) else {
+        return None;
+    };
     let target = text.trim().strip_prefix("gitdir:")?.trim();
     let gitdir = {
         let raw = Path::new(target);
@@ -253,7 +255,10 @@ fn main_checkout_of(worktree: &Path, dot_git_file: &Path) -> Option<PathBuf> {
             } else {
                 gitdir.join(raw)
             };
-            std::fs::canonicalize(joined).ok()?
+            let Ok(common) = std::fs::canonicalize(joined) else {
+                return None;
+            };
+            common
         }
         Err(_) => return None,
     };

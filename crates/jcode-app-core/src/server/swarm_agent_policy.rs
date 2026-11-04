@@ -33,7 +33,7 @@ const EFFORTS: [&str; 7] = ["none", "minimal", "low", "medium", "high", "xhigh",
 
 /// What a definition contributes to a spawn after trust and force rules.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct AppliedPolicy {
+pub(in crate::server) struct AppliedPolicy {
     /// Concrete model or route to request. `None` keeps the default chain.
     pub model: Option<String>,
     /// `true` when the definition said `inherit`: use the coordinator's model
@@ -68,7 +68,7 @@ fn valid_effort(effort: &str) -> Option<String> {
 }
 
 /// Apply trust and force rules to `definition`'s policy.
-pub(super) fn applied_policy(
+pub(in crate::server) fn applied_policy(
     definition: &AgentDefinition,
     agents: &AgentsConfig,
     working_dir: Option<&Path>,
@@ -120,7 +120,7 @@ pub(super) fn applied_policy(
 /// Headed workers attach from a separate process and a session record has no
 /// tool restriction, so a definition's `tools` cannot narrow them. Model and
 /// effort do apply. Log it once per spawn so the gap is visible.
-pub(super) fn warn_visible_tools_unsupported(policy: &AppliedPolicy) {
+pub(in crate::server) fn warn_visible_tools_unsupported(policy: &AppliedPolicy) {
     if policy.tools.is_some() || !policy.disallowed_tools.is_empty() {
         crate::logging::warn(
             "agent definition tools/disallowedTools are not applied to visible (headed) workers; use headless or inline spawn mode to enforce them",
@@ -130,7 +130,7 @@ pub(super) fn warn_visible_tools_unsupported(policy: &AppliedPolicy) {
 
 /// The model and effort requests for a spawn after the definition's policy.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SpawnRequest {
+pub(in crate::server) struct SpawnRequest {
     pub model: Option<String>,
     pub effort: Option<String>,
 }
@@ -143,7 +143,7 @@ pub(super) struct SpawnRequest {
 /// the `inherit` sentinel. The definition's `effort` replaces the request's
 /// effort, which the swarm tool never fills for agents. With no applied
 /// policy the inputs pass through unchanged.
-pub(super) fn spawn_request(
+pub(in crate::server) fn spawn_request(
     requested_model: Option<String>,
     requested_effort: Option<String>,
     applied: &AppliedPolicy,
@@ -163,7 +163,7 @@ pub(super) fn spawn_request(
 /// resulting model and effort request. Logs the trust, force and tool-surface
 /// notices once. `headed` is true for visible workers, which cannot be
 /// narrowed.
-pub(super) fn for_spawn(
+pub(in crate::server) fn for_spawn(
     definition: Option<&AgentDefinition>,
     agents: &AgentsConfig,
     working_dir: Option<&str>,
@@ -171,9 +171,10 @@ pub(super) fn for_spawn(
     requested_effort: Option<String>,
     headed: bool,
 ) -> (AppliedPolicy, SpawnRequest) {
-    let applied = definition
-        .map(|d| applied_policy(d, agents, working_dir.map(Path::new)))
-        .unwrap_or_default();
+    let applied = match definition {
+        Some(d) => applied_policy(d, agents, working_dir.map(Path::new)),
+        None => AppliedPolicy::default(),
+    };
     if let Some(notice) = applied.notice.as_deref() {
         crate::logging::warn(notice);
     }
@@ -189,7 +190,7 @@ pub(super) fn for_spawn(
 /// widens `base`. Used to preview the surface in tests and logs; the live
 /// agent applies the same rule in `Agent::narrow_tools`.
 #[cfg(test)]
-pub(super) fn narrow_tools(base: &mut HashSet<String>, policy: &AppliedPolicy) {
+pub(in crate::server) fn narrow_tools(base: &mut HashSet<String>, policy: &AppliedPolicy) {
     if let Some(allow) = &policy.tools {
         let allow: HashSet<&str> = allow.iter().map(String::as_str).collect();
         base.retain(|tool| allow.contains(tool.as_str()));

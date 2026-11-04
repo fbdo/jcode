@@ -57,7 +57,7 @@ use workspace::{handle_workspace_command, handle_workspace_navigation_key};
 #[allow(unused_imports)]
 pub(super) use input_dispatch::{
     apply_remote_transcript_event, apply_transcript_event, begin_remote_send,
-    begin_remote_split_launch, finish_remote_split_launch, history_matches_pending_startup_prompt,
+    begin_remote_send_with_origin, begin_remote_split_launch, finish_remote_split_launch, history_matches_pending_startup_prompt,
     route_prepared_input_to_new_remote_session, stage_turn_for_remote_tick_loop,
     submit_prepared_remote_input, submit_remote_slash_input, submit_remote_voice_transcript,
     submit_voice_transcript,
@@ -127,6 +127,14 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
     needs_redraw |= app.retire_expired_status_notice();
     needs_redraw |= app.poll_usage_reset();
     needs_redraw |= app.poll_cloud_job();
+    if app.take_cloud_remote_interrupt() {
+        if let Err(error) = remote.cancel_with_reason("cloud_handoff_ready").await {
+            crate::logging::warn(&format!(
+                "Failed to interrupt turn for cloud handoff: {error}"
+            ));
+        }
+        needs_redraw = true;
+    }
     if let Some((provider, account)) = app.usage_reset.invalidate_account.take() {
         let sent = match provider {
             super::usage_reset::Provider::OpenAi => remote.invalidate_openai_usage(account).await,
@@ -399,6 +407,8 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
             super::helpers::partition_queued_messages(queued_messages, hidden_reminders);
         let combined = messages.join("\n\n");
         let auto_retry = reminder.is_some() && messages.is_empty();
+        // Text a person queued keeps its human origin even though it is sent as `is_system`.
+        let queued_origin_is_auto = messages.iter().all(|msg| super::commands::is_poke_message(msg));
         crate::logging::info(&format!(
             "Sending queued continuation message ({} chars)",
             combined.len()
@@ -409,12 +419,13 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         for msg in &messages {
             app.push_display_message(DisplayMessage::user(msg.clone()));
         }
-        if begin_remote_send(
+        if begin_remote_send_with_origin(
             app,
             remote,
             combined.clone(),
             vec![],
             true,
+            queued_origin_is_auto,
             reminder.clone(),
             auto_retry,
             0,
@@ -1360,6 +1371,16 @@ async fn dispatch_pending_server_reload(app: &mut App, remote: &mut RemoteConnec
     }
 }
 
+/// Restore skill arguments deferred with a queued prompt, but never over a
+/// later explicit skill selection (a bare `/skill` entered while the switch was
+/// in flight sets empty arguments that stale ones must not replace).
+pub(super) fn restore_deferred_skill_arguments(app: &mut App) {
+    let deferred = app.pending_skill_arguments_after_model_switch.take();
+    if app.pending_skill_arguments.is_none() {
+        app.pending_skill_arguments = deferred;
+    }
+}
+
 pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteConnection) {
     if app
         .remote_queue_retry_not_before
@@ -1459,6 +1480,7 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         && !app.is_processing
         && let Some(prepared) = app.pending_prompt_after_model_switch.take()
     {
+        restore_deferred_skill_arguments(app);
         if let Err(error) = submit_prepared_remote_input(app, remote, prepared).await {
             app.push_display_message(DisplayMessage::error(format!(
                 "Failed to submit prompt after model switch: {}",
@@ -1664,6 +1686,8 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
         let combined = messages.join("\n\n");
         let preserve_visible_turn = super::commands::queued_messages_are_only_pokes(&messages);
         let auto_retry = reminder.is_some() && messages.is_empty();
+        // Text a person queued keeps its human origin even though it is sent as `is_system`.
+        let queued_origin_is_auto = messages.iter().all(|msg| super::commands::is_poke_message(msg));
         for msg in display_system_messages {
             app.push_display_message(DisplayMessage::system(msg));
         }
@@ -1679,12 +1703,13 @@ pub(super) async fn process_remote_followups(app: &mut App, remote: &mut RemoteC
                 app.visible_turn_started = Some(Instant::now());
             }
         }
-        if begin_remote_send(
+        if begin_remote_send_with_origin(
             app,
             remote,
             combined.clone(),
             vec![],
             true,
+            queued_origin_is_auto,
             reminder.clone(),
             auto_retry,
             0,
@@ -1936,6 +1961,12 @@ async fn handle_debug_command(app: &mut App, cmd: &str, remote: &mut RemoteConne
     if cmd == "state" {
         return serde_json::json!({
             "processing": app.is_processing,
+            "processing_status": format!("{:?}", app.status),
+            "current_message_id": app.current_message_id,
+            "pending_soft_interrupts": app.pending_soft_interrupts.len(),
+            "pending_soft_interrupt_requests": app.pending_soft_interrupt_requests.len(),
+            "pending_queued_dispatch": app.pending_queued_dispatch,
+            "remote_session_id": app.remote_session_id,
             "messages": app.messages.len(),
             "display_messages": app.display_messages.len(),
             "input": app.input,
@@ -2041,6 +2072,9 @@ fn queue_message_for_reconnect(app: &mut App) {
 
     let prepared = input::take_prepared_input(app);
     app.queued_messages.push(prepared.expanded);
+    if crate::tui::is_ssh_remote() {
+        crate::tui::request_immediate_ssh_reconnect();
+    }
 
     let queued_count = app.queued_messages.len();
     app.set_status_notice(format!(

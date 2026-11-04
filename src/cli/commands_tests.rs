@@ -435,9 +435,9 @@ async fn run_dependency_mixed_work_stays_actionable_and_scoped() {
     };
     assert_eq!(count, 1);
     let message = run_actionable_poke_message(message, &todos, &actionable);
-    assert!(message.contains("Actionable todos:\n- independent:"));
+    assert!(message.contains("Actionable todos:\n- \"todo independent\""));
     assert!(
-        !message.contains("- waiting:"),
+        !message.contains("\"todo waiting\""),
         "blocked work is not actionable"
     );
     assert!(crate::todo::is_auto_poke_message(&message));
@@ -1346,6 +1346,18 @@ async fn incomplete_todo_followups_stop_after_three_in_all_output_modes() {
                 _ => run_single_message_command_ndjson(&mut agent, provider, "go")
                     .await
                     .unwrap(),
+            }
+            if mode != "ndjson" {
+                // Only the person's first message is `user`; generated pokes are not.
+                assert_eq!(
+                    crate::hooks::current_prompt_origin(agent.session_id()),
+                    Some(if enabled {
+                        crate::hooks::PromptOrigin::Auto
+                    } else {
+                        crate::hooks::PromptOrigin::User
+                    }),
+                    "{mode}, enabled={enabled}"
+                );
             }
             let session = crate::session::Session::load(agent.session_id()).unwrap();
             let followups = session

@@ -1,6 +1,6 @@
 //! `jcode trust`: review and approve what a project wants to run.
 
-use super::super::args::{TrustCommand, TrustScopeArg};
+use super::args::{Command, TrustCommand, TrustScopeArg};
 use crate::project_trust::{self, Scope, ScopeReview, TrustState};
 use anyhow::Result;
 use std::io::{self, IsTerminal, Write};
@@ -197,6 +197,20 @@ fn list() {
     }
 }
 
+pub(crate) fn is_offline_command(command: Option<&Command>) -> bool {
+    matches!(command, Some(Command::Mcp { .. } | Command::Trust { .. }))
+}
+
+/// `jcode mcp ...` and `jcode trust ...`: independent of provider profiles,
+/// sessions and the daemon. Any other command is a no-op.
+pub(crate) async fn run_offline_command(command: Option<Command>) -> Result<()> {
+    match command {
+        Some(Command::Mcp { action }) => super::mcp::run(action).await,
+        Some(Command::Trust { action }) => run_trust_command(action),
+        _ => Ok(()),
+    }
+}
+
 pub(crate) fn run_trust_command(action: TrustCommand) -> Result<()> {
     match action {
         TrustCommand::Show { path } => show(path),
@@ -212,8 +226,13 @@ pub(crate) fn run_trust_command(action: TrustCommand) -> Result<()> {
 /// At the start of an interactive session, offer to approve untrusted project
 /// scopes. Headless runs never prompt and never block: untrusted scopes are
 /// simply skipped by their loaders.
-pub(crate) fn maybe_prompt_for_project_trust() -> Result<()> {
-    if !can_prompt() {
+pub(crate) fn maybe_prompt_for_project_trust(command: Option<&Command>) -> Result<()> {
+    // Only commands that start an interactive session offer to approve a project.
+    let interactive = matches!(
+        command,
+        None | Some(Command::Connect) | Some(Command::Repl) | Some(Command::SelfDev { .. })
+    );
+    if !interactive || !can_prompt() {
         return Ok(());
     }
     let path = std::env::current_dir()?;

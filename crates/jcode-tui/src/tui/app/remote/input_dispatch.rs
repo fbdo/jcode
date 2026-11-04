@@ -16,6 +16,37 @@ pub(in crate::tui::app) async fn begin_remote_send(
     auto_retry: bool,
     retry_attempts: u8,
 ) -> Result<u64> {
+    begin_remote_send_with_origin(
+        app,
+        remote,
+        content,
+        images,
+        is_system,
+        is_system,
+        system_reminder,
+        auto_retry,
+        retry_attempts,
+    )
+    .await
+}
+
+/// Like [`begin_remote_send`], but the hook prompt origin is chosen separately from
+/// `is_system`. Queued follow-ups are sent as `is_system` yet may carry text a person typed.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "remote send needs explicit message payload, origin, reminders, retry metadata, and image attachments"
+)]
+pub(in crate::tui::app) async fn begin_remote_send_with_origin(
+    app: &mut App,
+    remote: &mut RemoteConnection,
+    content: String,
+    images: Vec<(String, String)>,
+    is_system: bool,
+    auto_origin: bool,
+    system_reminder: Option<String>,
+    auto_retry: bool,
+    retry_attempts: u8,
+) -> Result<u64> {
     app.prepare_cloud_environment(remote).await?;
     let recovery = app.cloud_recovery_reminder();
     let system_reminder = match (system_reminder, recovery.as_ref()) {
@@ -23,7 +54,7 @@ pub(in crate::tui::app) async fn begin_remote_send(
         (None, Some(recovery)) => Some(recovery.clone()),
         (reminder, None) => reminder,
     };
-    if is_system {
+    if auto_origin {
         remote.mark_next_message_auto();
     }
     let msg_id = remote
@@ -127,6 +158,9 @@ pub(in crate::tui::app) async fn submit_prepared_remote_input(
 ) -> Result<()> {
     if app.remote_model_switch_in_flight || app.auth_catalog_refresh_pending {
         app.pending_prompt_after_model_switch = Some(prepared);
+        // Arguments travel with the prompt: a replacement prompt takes over
+        // (or clears) the previous invocation's arguments.
+        app.pending_skill_arguments_after_model_switch = app.pending_skill_arguments.take();
         app.set_status_notice(if app.auth_catalog_refresh_pending {
             "Prompt queued until model setup completes"
         } else {
@@ -742,6 +776,51 @@ mod ssh_slash_tests {
             assert_eq!(app.input, "/local");
             assert_eq!(app.pending_images, images);
             assert_eq!(remote.next_request_id_for_test(), next_id);
+        });
+    }
+
+    #[test]
+    fn ssh_poke_hotkey_controls_daemon_instead_of_local_todos() {
+        if app_mod::commands_dispatch::ssh_test_runs_in_child(
+            "ssh_poke_hotkey_controls_daemon_instead_of_local_todos",
+        ) {
+            return;
+        }
+        let mut app = app_mod::tests::create_test_app();
+        app.is_remote = true;
+        let runtime = tokio::runtime::Runtime::new().unwrap();
+        runtime.block_on(async {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut remote = RemoteConnection::dummy();
+            let peer = remote.take_dummy_peer().unwrap();
+            let (reader, _writer) = peer.into_split();
+            let mut reader = BufReader::new(reader);
+            for (enabled, busy, args) in [
+                (true, false, vec!["off"]),
+                (true, true, vec!["off"]),
+                (false, true, vec!["on"]),
+                (false, false, vec![]),
+            ] {
+                app.auto_poke_incomplete_todos = enabled;
+                app.is_processing = busy;
+                app.handle_remote_key(KeyCode::Char('p'), KeyModifiers::CONTROL, &mut remote)
+                    .await
+                    .unwrap();
+                let mut line = String::new();
+                tokio::time::timeout(Duration::from_secs(1), reader.read_line(&mut line))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                assert_eq!(request["type"], "runtime_command");
+                assert_eq!(request["command"], "poke");
+                assert_eq!(request["args"], serde_json::json!(args));
+                assert!(app.queued_messages.is_empty());
+                assert_eq!(
+                    app.auto_poke_incomplete_todos, enabled,
+                    "wait for daemon acknowledgement"
+                );
+            }
         });
     }
 

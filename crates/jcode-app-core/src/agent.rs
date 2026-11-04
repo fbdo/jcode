@@ -11,19 +11,18 @@ mod interrupts;
 mod messages;
 #[cfg(test)]
 mod model_usage_tests;
-mod prompt_hooks;
 mod prompting;
 mod provider;
 mod response_recovery;
 mod skill_activation;
 mod runtime_recovery;
 mod status;
-mod stop_hook;
 mod streaming;
 #[cfg(test)]
 mod swarm_reminder_tests;
 mod tools;
 mod turn_execution;
+pub(crate) use turn_execution::hook_notice_event;
 mod turn_loops;
 mod turn_ownership;
 pub(crate) use turn_ownership::{
@@ -55,7 +54,6 @@ use crate::tool::{Registry, ToolContext, ToolExecutionMode};
 use anyhow::Result;
 use futures::StreamExt;
 use std::collections::{HashMap, HashSet};
-use std::hash::{Hash, Hasher};
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
@@ -83,63 +81,9 @@ static WORKING_GIT_STATE_CACHE: LazyLock<StdMutex<HashMap<PathBuf, Option<GitSta
     LazyLock::new(|| StdMutex::new(HashMap::new()));
 const STREAM_KEEPALIVE_PONG_ID: u64 = 0;
 
-fn stable_hash_str(value: &str) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    value.hash(&mut hasher);
-    hasher.finish()
-}
-
-fn stable_hash_json<T: serde::Serialize + ?Sized>(value: &T) -> u64 {
-    let encoded = serde_json::to_string(value).unwrap_or_default();
-    stable_hash_str(&encoded)
-}
-
-fn stable_json_len<T: serde::Serialize + ?Sized>(value: &T) -> usize {
-    serde_json::to_string(value)
-        .map(|encoded| encoded.len())
-        .unwrap_or_default()
-}
-
-fn message_hashes(messages: &[Message]) -> Vec<u64> {
-    // Hash the cache-relevant projection, not the raw Message. Raw hashing
-    // keys off non-transmitted metadata (timestamp, tool_duration_ms,
-    // ReasoningTrace blocks, cache_control markers), which triggers spurious
-    // harness:_prefix_changed KV-cache miss reports when the same message is
-    // re-serialized with backfilled metadata on the next turn.
-    crate::message::cache_relevant_message_hashes(messages)
-}
-
-fn kv_cache_request_event(
-    messages: &[Message],
-    tools: &[ToolDefinition],
-    system_static: &str,
-    ephemeral_messages: &[Message],
-) -> ServerEvent {
-    // Provider-native deferred definitions are outside the cached prefix.
-    // Late MCP discovery must not look like a harness-induced tools change
-    // when the provider reports a cache miss for some unrelated reason.
-    // Borrow definitions rather than cloning potentially large MCP schemas.
-    let eager_tools: Vec<_> = tools.iter().filter(|tool| !tool.defer_loading).collect();
-    let ephemeral_hash = if ephemeral_messages.is_empty() {
-        None
-    } else {
-        Some(stable_hash_json(ephemeral_messages))
-    };
-    ServerEvent::KvCacheRequest {
-        system_static_hash: stable_hash_str(system_static),
-        tools_hash: stable_hash_json(&eager_tools),
-        messages_hash: stable_hash_json(&crate::message::cache_relevant_messages(messages)),
-        message_hashes: message_hashes(messages),
-        message_count: messages.len(),
-        tool_count: eager_tools.len(),
-        system_static_chars: system_static.chars().count(),
-        tools_json_chars: stable_json_len(&eager_tools),
-        messages_json_chars: stable_json_len(messages),
-        ephemeral_hash,
-        ephemeral_chars: stable_json_len(ephemeral_messages),
-        ephemeral_message_count: ephemeral_messages.len(),
-    }
-}
+#[path = "agent/cache_request.rs"]
+mod cache_request;
+use cache_request::kv_cache_request_event;
 
 impl Agent {
     /// Provider identity used for cache retention lookups. Generic OpenAI is
@@ -611,7 +555,7 @@ impl Agent {
         registry: Registry,
         working_dir: Option<&str>,
     ) -> Self {
-        Self::new_with_initial_ownership(provider, registry, working_dir, None, true)
+        Self::new_with_initial_ownership(provider, registry, working_dir, None, true, true)
     }
 
     /// A connection may only be a viewer attaching to an existing Agent.
@@ -621,16 +565,35 @@ impl Agent {
         registry: Registry,
         working_dir: Option<&str>,
     ) -> Self {
-        Self::new_with_initial_ownership(provider, registry, working_dir, None, false)
+        Self::new_with_initial_ownership(provider, registry, working_dir, None, false, true)
     }
 
+    #[cfg(test)]
     pub(crate) fn new_with_parent_and_initial_working_dir(
         provider: Arc<dyn Provider>,
         registry: Registry,
         working_dir: Option<&str>,
         parent_id: Option<String>,
     ) -> Self {
-        Self::new_with_initial_ownership(provider, registry, working_dir, parent_id, true)
+        Self::new_with_initial_ownership(provider, registry, working_dir, parent_id, true, true)
+    }
+
+    /// Like [`Self::new_with_parent_and_initial_working_dir`], but leaves the
+    /// `session_start` hook to the caller. Swarm workers register their hook
+    /// identity after construction, so the caller fires the hook with
+    /// [`Self::fire_session_start_hook`] once the identity is in place.
+    pub(crate) fn new_with_parent_deferred_start_hook(
+        provider: Arc<dyn Provider>,
+        registry: Registry,
+        working_dir: Option<&str>,
+        parent_id: Option<String>,
+    ) -> Self {
+        Self::new_with_initial_ownership(provider, registry, working_dir, parent_id, true, false)
+    }
+
+    /// Fire the `session_start` hook deferred at construction.
+    pub(crate) fn fire_session_start_hook(&self) {
+        self.fire_session_lifecycle_hook("session_start", "create");
     }
 
     fn new_with_initial_ownership(
@@ -639,6 +602,7 @@ impl Agent {
         working_dir: Option<&str>,
         parent_id: Option<String>,
         track_concurrency: bool,
+        fire_start_hook: bool,
     ) -> Self {
         let start = Instant::now();
         let mut marks: Vec<(&'static str, u128)> = Vec::with_capacity(10);
@@ -681,7 +645,9 @@ impl Agent {
         mark("compaction", &mut lap);
         agent.log_env_snapshot("create");
         mark("env_snapshot", &mut lap);
-        agent.fire_session_lifecycle_hook("session_start", "create");
+        if fire_start_hook {
+            agent.fire_session_lifecycle_hook("session_start", "create");
+        }
         if track_concurrency {
             agent.activate_concurrency_tracking();
         }
@@ -722,11 +688,23 @@ impl Agent {
         } else {
             crate::config::config().tools.selection()
         };
+        // A restriction an agent definition put on this session survives a
+        // resume, and only ever narrows the selection.
+        let allowed_tools = match (&session.tool_allowlist, tool_selection.allowed_tools) {
+            (Some(restricted), Some(selected)) => Some(
+                selected
+                    .into_iter()
+                    .filter(|name| restricted.contains(name))
+                    .collect(),
+            ),
+            (Some(restricted), None) => Some(restricted.iter().cloned().collect()),
+            (None, selected) => selected,
+        };
         let mut agent = Self::build_base(
             provider,
             registry,
             session,
-            tool_selection.allowed_tools,
+            allowed_tools,
             tool_selection.disabled_tools,
         );
         // begin_concurrency_tracking below writes the presence markers.

@@ -2,14 +2,23 @@ use super::*;
 use ratatui::widgets::Wrap;
 
 impl SessionPicker {
-    pub(super) fn estimated_tokens_color(tokens: usize) -> Color {
-        match tokens {
-            0 => rgb(100, 100, 100),
-            1..10_000 => rgb(129, 199, 132),
-            10_000..50_000 => rgb(255, 213, 79),
-            50_000..=1_000_000 => rgb(255, 167, 38),
-            _ => rgb(239, 115, 115),
-        }
+    pub(super) fn todo_dot_spans(session: &SessionInfo, width: usize) -> Vec<Span<'static>> {
+        let count = session.todo_statuses.len();
+        let visible = count.min(width);
+        (0..visible)
+            .map(|index| {
+                if index + 1 == visible && count > visible {
+                    return Span::styled("…", Style::default().fg(rgb(140, 140, 140)));
+                }
+                let color = match session.todo_statuses[index].as_str() {
+                    "completed" => rgb(129, 199, 132),
+                    "in_progress" => rgb(255, 213, 79),
+                    "cancelled" => rgb(80, 80, 80),
+                    _ => rgb(140, 140, 140),
+                };
+                Span::styled("●", Style::default().fg(color))
+            })
+            .collect()
     }
 
     fn running_spinner_frame() -> usize {
@@ -45,6 +54,7 @@ impl SessionPicker {
         ]))
     }
 
+    #[cfg(test)]
     pub(super) fn format_estimated_tokens(tokens: usize) -> String {
         if tokens < 1_000 {
             return format!("~{} tok", tokens);
@@ -216,7 +226,6 @@ impl SessionPicker {
             Style::default().fg(Color::White)
         };
 
-        let canary_marker = if session.is_canary { " 🔬" } else { "" };
         let debug_marker = if session.is_debug { " 🧪" } else { "" };
         let saved_marker = if session.saved { " 📌" } else { "" };
         let selection_marker = if is_marked { "● " } else { "○ " };
@@ -244,7 +253,6 @@ impl SessionPicker {
             name_style,
         ));
         line1_spans.extend([
-            Span::styled(canary_marker, Style::default().fg(rgb(255, 193, 7))),
             Span::styled(debug_marker, Style::default().fg(rgb(180, 180, 180))),
             Span::styled(saved_marker, Style::default().fg(rgb(255, 180, 100))),
         ]);
@@ -286,25 +294,11 @@ impl SessionPicker {
                     .add_modifier(Modifier::BOLD),
             ));
         }
-        if same_dir {
-            line1_spans.push(Span::styled(
-                "  ▸ here",
-                Style::default()
-                    .fg(same_dir_clr)
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        line1_spans.push(Span::styled(
-            format!(
-                "  {}",
-                Self::format_estimated_tokens(session.estimated_tokens)
-            ),
-            Style::default().fg(Self::estimated_tokens_color(session.estimated_tokens)),
-        ));
+        line1_spans.extend(Self::todo_dot_spans(session, 64));
         let line1 = Line::from(line1_spans);
 
-        // Identity and tokens above, directory and last activity below.
-        // The final span of each row is reserved before truncating its left side.
+        // Identity and todo dots above, directory and last activity below.
+        // Trailing indicators are reserved before truncating each row's left side.
         let mut detail_spans = vec![Span::raw("  ")];
         if let Some(dir) = session.working_dir.as_deref() {
             let directory_icon = if session.server_icon.as_deref() == Some("☁") {
@@ -319,6 +313,14 @@ impl SessionPicker {
             ));
         } else {
             detail_spans.push(Span::styled("No directory", Style::default().fg(dimmer)));
+        }
+        if same_dir {
+            detail_spans.push(Span::styled(
+                "  ▸ here",
+                Style::default()
+                    .fg(same_dir_clr)
+                    .add_modifier(Modifier::BOLD),
+            ));
         }
         let activity = format!("  {active_ago}");
         detail_spans.push(Span::styled(activity, Style::default().fg(dim)));
@@ -345,6 +347,24 @@ impl SessionPicker {
             .into_iter()
             .enumerate()
             .map(|(index, mut line)| {
+                if index == 0 {
+                    // Keep at least half the row for identity, even for huge plans.
+                    line.spans
+                        .truncate(line.spans.len() - session.todo_statuses.len().min(64));
+                    let dots = Self::todo_dot_spans(session, width.saturating_sub(8) / 2);
+                    if dots.is_empty() {
+                        return jcode_tui_render::truncate_line_with_ellipsis_to_width(
+                            &line, width,
+                        );
+                    }
+                    let left_width = width.saturating_sub(dots.len() + 2);
+                    let mut left =
+                        jcode_tui_render::truncate_line_with_ellipsis_to_width(&line, left_width);
+                    left.spans
+                        .push(Span::raw(" ".repeat(width - dots.len() - left.width())));
+                    left.spans.extend(dots);
+                    return left;
+                }
                 if index < 2 {
                     let Some(suffix) = line.spans.pop() else {
                         return line;

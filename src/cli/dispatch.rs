@@ -85,17 +85,8 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
     }
     // Explicit MCP management is independent of provider profiles, sessions,
     // and the daemon. In particular, list must remain offline and scriptable.
-    if let Some(Command::Trust { .. }) = &args.command {
-        let Some(Command::Trust { action }) = args.command else {
-            unreachable!("trust command checked above");
-        };
-        return commands::run_trust_command(action);
-    }
-    if matches!(args.command, Some(Command::Mcp { .. })) {
-        let Some(Command::Mcp { action }) = args.command else {
-            unreachable!("MCP command checked above");
-        };
-        return super::mcp::run(action).await;
+    if super::trust::is_offline_command(args.command.as_ref()) {
+        return super::trust::run_offline_command(args.command).await;
     }
     // The standalone picker is the entire command, not a resume ID lookup.
     // In particular, cancelling it must not continue into provider/agent startup
@@ -154,15 +145,10 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         crate::config::invalidate_config_cache();
     }
 
-    if matches!(
-        args.command.as_ref(),
-        None | Some(Command::Connect) | Some(Command::Repl) | Some(Command::SelfDev { .. })
-    ) {
-        commands::maybe_prompt_for_project_trust()?;
-    }
+    super::trust::maybe_prompt_for_project_trust(args.command.as_ref())?;
 
     match args.command {
-        Some(Command::Mcp { action }) => super::mcp::run(action).await?,
+        Some(Command::Mcp { .. } | Command::Trust { .. }) => unreachable!("handled above"),
         Some(Command::Serve {
             temporary_server,
             owner_pid,
@@ -377,6 +363,7 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             super::args::AccountCommand::Manage => account::run_manage()?,
             super::args::AccountCommand::Logout => account::run_logout().await?,
         },
+        Some(Command::Mobile { action }) => account::run_mobile(action).await?,
         Some(Command::Repl) => {
             let (provider, registry) =
                 provider_init::init_provider_and_registry(&args.provider, args.model.as_deref())
@@ -394,7 +381,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             commands::run_usage_command(json).await?;
         }
         Some(Command::Telemetry(action)) => super::telemetry::run(action)?,
-        Some(Command::Trust { action }) => commands::run_trust_command(action)?,
         Some(Command::SelfDev { build }) => {
             selfdev::run_self_dev(build, args.resume).await?;
         }
@@ -680,31 +666,11 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
 /// Anthropic Messages runtime with the profile's base URL and auth, while
 /// `AnthropicApi` would pin an Anthropic API-key credential the profile may
 /// not have (e.g. `auth = "none"`).
-fn provider_choice_for_named_profile(profile_name: &str) -> ProviderChoice {
-    // Same source as `apply_named_provider_profile_env`, which already
-    // validated that the profile exists.
-    match crate::config::Config::load_strict() {
-        Ok(config) => provider_choice_for_named_profile_in(profile_name, &config),
-        Err(_) => provider_choice_for_named_profile_in(profile_name, crate::config::config()),
-    }
-}
-
-fn provider_choice_for_named_profile_in(
-    profile_name: &str,
-    config: &crate::config::Config,
-) -> ProviderChoice {
-    match config.providers.get(profile_name) {
-        Some(profile)
-            if matches!(
-                profile.provider_type,
-                crate::config::NamedProviderType::AnthropicCompatible
-            ) =>
-        {
-            ProviderChoice::Auto
-        }
-        _ => ProviderChoice::OpenaiCompatible,
-    }
-}
+#[path = "dispatch/named_profiles.rs"]
+mod named_profiles;
+use named_profiles::provider_choice_for_named_profile;
+#[cfg(test)]
+use named_profiles::provider_choice_for_named_profile_in;
 
 fn auth_doctor_provider_arg<'a>(
     positional_provider: Option<&'a str>,

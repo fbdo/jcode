@@ -15,7 +15,6 @@ mod menubar;
 mod provider_setup;
 mod report_info;
 mod restart;
-mod trust;
 
 pub(crate) use super::auth_test::run_post_login_validation;
 #[cfg(test)]
@@ -32,7 +31,6 @@ pub use restart::{
     maybe_run_pending_restart_restore_on_startup, run_restart_clear_command,
     run_restart_restore_command, run_restart_save_command, run_restart_status_command,
 };
-pub(crate) use trust::{maybe_prompt_for_project_trust, run_trust_command};
 
 pub enum AmbientSubcommand {
     Status,
@@ -2855,7 +2853,13 @@ async fn run_single_message_command_plain_with_auto_poke(
     let mut gate_digest_delivered = false;
     let mut incomplete_budget = crate::todo::IncompleteTodoBudget::default();
     loop {
-        agent.run_once(&next_message).await?;
+        // Only the first message is the person's; poke follow-ups are generated.
+        let origin = if turns_completed == 0 {
+            crate::hooks::PromptOrigin::User
+        } else {
+            crate::hooks::PromptOrigin::Auto
+        };
+        agent.run_once_as(origin, &next_message).await?;
         turns_completed += 1;
         if !run_command_auto_poke_enabled() {
             break;
@@ -2972,7 +2976,12 @@ async fn run_single_message_command_capture_with_auto_poke(
     let mut gate_digest_delivered = false;
     let mut incomplete_budget = crate::todo::IncompleteTodoBudget::default();
     loop {
-        outputs.push(agent.run_once_capture(&next_message).await?);
+        let origin = if turns_completed == 0 {
+            crate::hooks::PromptOrigin::User
+        } else {
+            crate::hooks::PromptOrigin::Auto
+        };
+        outputs.push(agent.run_once_capture_as(origin, &next_message).await?);
         turns_completed += 1;
         if !run_command_auto_poke_enabled() {
             break;
@@ -3568,130 +3577,12 @@ fn write_json_line(stdout: &mut impl Write, value: &impl Serialize) -> Result<()
     Ok(())
 }
 
-pub async fn run_model_command(
-    choice: &super::provider_init::ProviderChoice,
-    model: Option<&str>,
-    emit_json: bool,
-    verbose: bool,
-) -> Result<()> {
-    let provider = super::provider_init::init_provider_quiet(choice, model).await?;
-
-    if let Err(err) = provider.prefetch_models().await
-        && !super::output::quiet_enabled()
-    {
-        eprintln!("Warning: failed to refresh dynamic model list: {}", err);
-    }
-
-    let routes = provider.model_routes();
-    let filtered_routes = filter_cli_model_routes_for_choice(choice, &routes);
-    let models = if filtered_routes.len() == routes.len() {
-        collect_cli_model_names(&routes, provider.available_models_display())
-    } else {
-        collect_cli_model_names(&filtered_routes, Vec::new())
-    };
-
-    if models.is_empty() {
-        anyhow::bail!(
-            "No models found for provider '{}'. Check credentials or try a different --provider.",
-            provider.name()
-        );
-    }
-
-    if emit_json {
-        let provider_label = super::provider_init::login_provider_for_choice(choice)
-            .map(|provider| provider.display_name.to_string())
-            .unwrap_or_else(|| {
-                crate::provider_catalog::runtime_provider_display_name(provider.name())
-            });
-        let report = ModelListReport {
-            provider: provider_label,
-            selected_model: provider.model(),
-            models,
-            routes: filtered_routes
-                .iter()
-                .map(|route| ModelListRouteReport {
-                    provider: cli_route_provider_display(&route.provider, &route.api_method),
-                    model: route.model.clone(),
-                    method: cli_api_method_display(&route.api_method),
-                    available: route.available,
-                })
-                .collect(),
-        };
-        println!("{}", serde_json::to_string_pretty(&report)?);
-    } else {
-        if verbose {
-            println!(
-                "Provider: {}",
-                crate::provider_catalog::runtime_provider_display_name(provider.name())
-            );
-            println!("Selected model: {}", provider.model());
-            println!("Available models: {}", models.len());
-            println!();
-        }
-        for model in models {
-            println!("{}", model);
-        }
-    }
-
-    Ok(())
-}
+#[path = "commands/model_listing.rs"]
+mod model_listing;
 
 #[cfg(test)]
-mod turn_envelope_tests {
-    use super::*;
-    use crate::protocol::{ServerEvent, TurnIdentity};
-
-    fn envelope(event: ServerEvent) -> ServerEvent {
-        ServerEvent::TurnEvent {
-            identity: TurnIdentity {
-                runtime_generation: "runtime-test".into(),
-                turn_id: 7,
-            },
-            event: Box::new(event),
-        }
-    }
-
-    #[test]
-    fn ndjson_preserves_wrapped_text_tool_and_error_payloads() {
-        for event in [
-            ServerEvent::TextDelta {
-                text: "hello".into(),
-            },
-            ServerEvent::ToolStart {
-                id: "tool-1".into(),
-                name: "read".into(),
-            },
-            ServerEvent::Interrupted,
-            ServerEvent::Error {
-                id: 9,
-                message: "failure".into(),
-                retry_after_secs: None,
-            },
-        ] {
-            let mut plain = Vec::new();
-            let mut wrapped = Vec::new();
-            let mut plain_state = NdjsonRunState::default();
-            let mut wrapped_state = NdjsonRunState::default();
-            emit_ndjson_event(&mut plain, &mut plain_state, event.clone()).unwrap();
-            emit_ndjson_event(&mut wrapped, &mut wrapped_state, envelope(envelope(event))).unwrap();
-            assert!(!plain.is_empty());
-            assert_eq!(wrapped, plain);
-            assert_eq!(wrapped_state.text, plain_state.text);
-        }
-    }
-
-    #[test]
-    fn unwrap_preserves_terminal_request_id_and_legacy_events() {
-        assert!(matches!(
-            unwrap_turn_event(envelope(envelope(ServerEvent::Done { id: 42 }))),
-            ServerEvent::Done { id: 42 }
-        ));
-        assert!(matches!(
-            unwrap_turn_event(ServerEvent::Done { id: 43 }),
-            ServerEvent::Done { id: 43 }
-        ));
-    }
-}
+mod turn_envelope_tests;
+pub use model_listing::run_model_command;
 
 mod model_routes;
 use model_routes::*;

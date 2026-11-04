@@ -156,9 +156,15 @@ pub(super) async fn cancel_spawned_descendant_turns(
     stopped
 }
 
+#[path = "swarm_agent_defs.rs"]
+pub(super) mod swarm_agent_defs;
+#[path = "swarm_agent_policy.rs"]
+pub(super) mod swarm_agent_policy;
 #[cfg(test)]
 #[path = "swarm_cascade_tests.rs"]
 mod swarm_cascade_tests;
+#[path = "swarm_hooks.rs"]
+pub(super) mod swarm_hooks;
 
 const DEFAULT_SWARM_STATUS_DEBOUNCE_MEMBER_THRESHOLD: usize = 2;
 const DEFAULT_SWARM_STATUS_DEBOUNCE_MS: u64 = 75;
@@ -1792,13 +1798,23 @@ pub(super) async fn update_member_status_with_report_tldr(
         }
     };
     if swarm_id.is_some() {
-        super::swarm_hooks::member_status_changed(&super::swarm_hooks::StatusTransition {
+        let coordinator_working_dir = match crate::hooks::swarm_identity(session_id) {
+            Some(identity) => swarm_members
+                .read()
+                .await
+                .get(&identity.coordinator_session_id)
+                .and_then(|member| member.working_dir.as_ref())
+                .map(|dir| dir.display().to_string()),
+            None => None,
+        };
+        swarm_hooks::member_status_changed(&swarm_hooks::StatusTransition {
             session_id,
             old_status: &old_status,
             new_status: status,
             status_changed,
             duration_ms: running_ms,
             completion_report: completion_report.as_deref(),
+            coordinator_working_dir: coordinator_working_dir.as_deref(),
         });
     }
     if let Some(ref id) = swarm_id {
@@ -1888,6 +1904,19 @@ pub(super) async fn update_member_status_with_report_tldr(
                     .unwrap_or(&session_id[..8.min(session_id.len())]);
                 let msg =
                     completion_notification_message(name, status, completion_report.as_deref());
+                // Display notifications alone never enter the owner's model
+                // context. Deliver reports through the reliable runtime bus,
+                // which wakes idle owners and queues reports for busy ones.
+                // Explicit stops are cancellation, not permission to restart.
+                if report_back_to_session_id.is_some() && status != "stopped" {
+                    crate::bus::Bus::global().publish(crate::bus::BusEvent::SwarmWorkerReported(
+                        crate::bus::SwarmWorkerReported {
+                            session_id: recipient_session_id.clone(),
+                            worker_session_id: session_id.to_string(),
+                            notification: msg.clone(),
+                        },
+                    ));
+                }
                 let _ = fanout_session_event(
                     swarm_members,
                     &recipient_session_id,

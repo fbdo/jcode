@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashMap};
@@ -96,8 +96,7 @@ pub(super) fn review_project_config(
             )
         })
         .collect::<BTreeMap<_, _>>()
-        .into_iter()
-        .map(|(_, review)| review)
+        .into_values()
         .collect();
     Ok(Some(ProjectMcpReview {
         project_root,

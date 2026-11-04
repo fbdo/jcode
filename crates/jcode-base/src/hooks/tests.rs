@@ -126,6 +126,29 @@ async fn tool_transformers_compose_json_replacements() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn tool_transformer_keeps_output_larger_than_default_capture_limit() {
+    let _guard = crate::storage::lock_test_env();
+    let temp = tempfile::TempDir::new().expect("temp dir");
+    // ~2 MiB of valid JSON, above the 1 MiB default stream capture.
+    let big = write_executable_script(
+        temp.path(),
+        "big.sh",
+        "#!/bin/sh\ncat >/dev/null\nprintf '{\"command\":\"'\nhead -c 2097152 /dev/zero | tr '\\0' 'a'\nprintf '\"}'\n",
+    );
+    let _env = transform_test_config(&big.to_string_lossy(), 10_000);
+
+    let output = transform_tool_input(
+        "ses_transform",
+        None,
+        "bash",
+        serde_json::json!({"command": "original"}),
+    )
+    .await;
+    assert_eq!(output["command"].as_str().map(str::len), Some(2 * 1024 * 1024));
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn tool_transformer_fails_open_for_invalid_output_and_timeout() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("temp dir");
@@ -306,11 +329,12 @@ async fn pre_tool_gate_timeout_is_not_held_open_by_grandchild_stdout() {
     let _guard = crate::storage::lock_test_env();
     let temp = tempfile::TempDir::new().expect("temp dir");
     // The hook exits at once but leaves a grandchild holding stdout open.
-    let script = write_executable_script(
-        temp.path(),
-        "grandchild.sh",
-        "#!/bin/sh\nsleep 30 &\nsleep 30\n",
+    let pid_file = temp.path().join("grandchild.pid");
+    let body = format!(
+        "#!/bin/sh\nsleep 30 &\necho $! > '{}'\nexit 0\n",
+        pid_file.display()
     );
+    let script = write_executable_script(temp.path(), "grandchild.sh", &body);
     let _env = gate_test_config(&script.to_string_lossy(), 300);
     let started = std::time::Instant::now();
     let decision = run_pre_tool_gate("ses_g", None, "bash", "{}")
@@ -321,6 +345,33 @@ async fn pre_tool_gate_timeout_is_not_held_open_by_grandchild_stdout() {
         started.elapsed() < std::time::Duration::from_secs(5),
         "gate must fail open at its timeout, not wait for the grandchild"
     );
+
+    // The timeout must also kill the surviving grandchild's process group.
+    let pid = std::fs::read_to_string(&pid_file)
+        .expect("grandchild pid file")
+        .trim()
+        .to_string();
+    let is_alive = |pid: &str| {
+        let out = std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", pid])
+            .output()
+            .expect("run ps");
+        let stat = String::from_utf8_lossy(&out.stdout);
+        let stat = stat.trim();
+        !stat.is_empty() && !stat.starts_with('Z')
+    };
+    let mut alive = true;
+    for _ in 0..40 {
+        if !is_alive(&pid) {
+            alive = false;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    if alive {
+        let _ = std::process::Command::new("kill").args(["-9", &pid]).status();
+    }
+    assert!(!alive, "grandchild {pid} survived the gate timeout");
 }
 
 #[test]
