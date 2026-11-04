@@ -2,6 +2,10 @@ use super::super::{PendingRemoteMessage, PendingSplitPrompt};
 use super::*;
 use crate::tui::app as app_mod;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "remote send needs explicit message payload, reminders, retry metadata, and image attachments"
+)]
 pub(in crate::tui::app) async fn begin_remote_send(
     app: &mut App,
     remote: &mut RemoteConnection,
