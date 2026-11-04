@@ -583,22 +583,6 @@ impl Config {
         {
             self.hooks.user_prompt_submit_timeout_ms = parsed;
         }
-        hook_env_override(
-            &mut self.hooks.swarm_member_start,
-            "JCODE_HOOK_SWARM_MEMBER_START",
-        );
-        hook_env_override(
-            &mut self.hooks.swarm_member_end,
-            "JCODE_HOOK_SWARM_MEMBER_END",
-        );
-        hook_env_override(
-            &mut self.hooks.user_prompt_submit,
-            "JCODE_HOOK_USER_PROMPT_SUBMIT",
-        );
-        if let Ok(v) = std::env::var("JCODE_HOOK_USER_PROMPT_SUBMIT_TIMEOUT_MS")
-            && let Ok(parsed) = v.trim().parse::<u64>()
-        {
-            self.hooks.user_prompt_submit_timeout_ms = parsed;
         }
         hook_env_override(
             &mut self.hooks.pre_tool_transform,

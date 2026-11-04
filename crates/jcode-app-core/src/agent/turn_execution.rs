@@ -1651,6 +1651,8 @@ impl Agent {
 
 #[path = "prompt_hooks.rs"]
 mod prompt_hooks;
+#[path = "stop_hook.rs"]
+mod stop_hook;
 pub(crate) use prompt_hooks::hook_notice_event;
 #[path = "turn_usage.rs"]
 mod turn_usage;

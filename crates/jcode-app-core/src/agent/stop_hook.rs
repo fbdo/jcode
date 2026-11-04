@@ -11,7 +11,9 @@ impl Agent {
         event_tx: &mpsc::UnboundedSender<ServerEvent>,
     ) -> Result<bool> {
         self.stop_hook_continues(last_assistant_message, stop_reason, |detail| {
-            let _ = event_tx.send(ServerEvent::StatusDetail { detail });
+            if event_tx.send(ServerEvent::StatusDetail { detail }).is_err() {
+                logging::debug("stop hook notice dropped: client event channel closed");
+            }
         })
         .await
     }
