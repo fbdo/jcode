@@ -402,7 +402,7 @@ async fn force_swarm_defaults_makes_operator_defaults_win_over_a_definition() {
 }
 
 #[tokio::test]
-async fn definition_comes_from_the_coordinator_dir_not_the_worker_dir() {
+async fn definition_comes_from_the_coordinator_dir_without_an_explicit_working_dir() {
     let _env = crate::storage::lock_test_env();
     let home = tempfile::TempDir::new().unwrap();
     let coordinator_project = tempfile::TempDir::new().unwrap();
@@ -458,12 +458,14 @@ async fn definition_comes_from_the_coordinator_dir_not_the_worker_dir() {
     let mcp = Arc::new(crate::mcp::SharedMcpPool::new(
         crate::mcp::McpConfig::default(),
     ));
-    let worker_dir = other_checkout.path().to_string_lossy().into_owned();
+    // No explicit working_dir: the coordinator's dir resolves the definition.
+    // (An explicit working_dir wins; see
+    // `spawn_definition_and_untrusted_policy_follow_explicit_working_dir`.)
     let child_id = spawn_swarm_agent(
         "coord",
         "agent-def-swarm",
         None,
-        Some(worker_dir),
+        None,
         None,
         Some(crate::config::SwarmSpawnMode::Headless),
         None,
