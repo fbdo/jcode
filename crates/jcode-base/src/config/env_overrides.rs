@@ -584,6 +584,14 @@ impl Config {
             self.hooks.user_prompt_submit_timeout_ms = parsed;
         }
         hook_env_override(
+            &mut self.hooks.swarm_member_start,
+            "JCODE_HOOK_SWARM_MEMBER_START",
+        );
+        hook_env_override(
+            &mut self.hooks.swarm_member_end,
+            "JCODE_HOOK_SWARM_MEMBER_END",
+        );
+        hook_env_override(
             &mut self.hooks.pre_tool_transform,
             "JCODE_HOOK_PRE_TOOL_TRANSFORM",
         );

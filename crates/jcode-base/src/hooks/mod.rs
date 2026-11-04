@@ -369,12 +369,21 @@ pub fn dispatch_observer(event: HookEvent) {
                             // Written off-thread so a hook that never reads
                             // stdin cannot block the agent. The pipe closes
                             // when the thread ends or the child exits.
-                            let _ = std::thread::Builder::new()
+                            if let Err(error) = std::thread::Builder::new()
                                 .name("jcode-hook-stdin".to_string())
                                 .spawn(move || {
                                     use std::io::Write;
-                                    let _ = stdin.write_all(json.as_bytes());
-                                });
+                                    if let Err(error) = stdin.write_all(json.as_bytes()) {
+                                        crate::logging::debug(&format!(
+                                            "Hook stdin write failed: {error}"
+                                        ));
+                                    }
+                                })
+                            {
+                                crate::logging::debug(&format!(
+                                    "Hook stdin thread failed: {error}"
+                                ));
+                            }
                         }
                         crate::platform::reap_detached(child);
                         crate::logging::debug(&format!(

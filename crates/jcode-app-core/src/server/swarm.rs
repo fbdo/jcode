@@ -159,6 +159,8 @@ pub(super) async fn cancel_spawned_descendant_turns(
 #[cfg(test)]
 #[path = "swarm_cascade_tests.rs"]
 mod swarm_cascade_tests;
+#[path = "swarm_hooks.rs"]
+pub(super) mod swarm_hooks;
 
 const DEFAULT_SWARM_STATUS_DEBOUNCE_MEMBER_THRESHOLD: usize = 2;
 const DEFAULT_SWARM_STATUS_DEBOUNCE_MS: u64 = 75;
