@@ -1,5 +1,4 @@
 //! Selected-workspace facts. All filesystem and SSH work runs in the preview loader.
-use super::*;
 use crate::tui::info_widget::InfoWidgetData;
 
 #[derive(Clone)]
@@ -40,8 +39,7 @@ pub(super) fn hydrate_workspace(data: &mut InfoWidgetData, target: &WorkspaceTar
     else {
         return;
     };
-    let config = crate::storage::jcode_dir()
-        .ok()
+    let config = super::preview_result(crate::storage::jcode_dir(), "SSH config directory")
         .map(|dir| dir.join("cloud/ssh_config"));
     let config = config.as_deref().filter(|path| path.is_file());
     if let crate::tui::cloud_git::RepoState::Ready(info) = runtime.block_on(
@@ -70,11 +68,7 @@ mod tests {
             );
         };
         run(&["init", "-q"]);
-        run(&[
-            "symbolic-ref",
-            "HEAD",
-            "refs/heads/selected-preview",
-        ]);
+        run(&["symbolic-ref", "HEAD", "refs/heads/selected-preview"]);
         std::fs::write(repo.path().join("selected-file"), "pending change").unwrap();
         let mut data = InfoWidgetData::default();
         hydrate_workspace(

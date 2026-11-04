@@ -49,6 +49,8 @@ mod performance;
 #[cfg(test)]
 mod performance_tests;
 mod preview_chrome;
+mod preview_io;
+use preview_io::preview_result;
 mod preview_metadata;
 mod preview_refresh;
 mod progressive_preview;
@@ -69,7 +71,7 @@ pub use loading::{
 };
 
 const SEARCH_CONTENT_BUDGET_BYTES: usize = 12_000;
-const DEFAULT_SESSION_SCAN_LIMIT: usize = 400;
+const DEFAULT_SESSION_SCAN_LIMIT: usize = 500;
 const MIN_SESSION_SCAN_LIMIT: usize = 50;
 const MAX_SESSION_SCAN_LIMIT: usize = 10_000;
 
@@ -161,7 +163,7 @@ fn git_common_dir(dir: &Path) -> Option<PathBuf> {
 /// Format duration since a time in a human-readable way
 #[path = "session_picker/time_labels.rs"]
 mod time_labels;
-pub(super) use time_labels::format_time_ago;
+pub(crate) use time_labels::format_time_ago;
 
 /// Which pane has keyboard focus
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -303,6 +305,8 @@ pub struct SessionPicker {
     cached_search_refs: Vec<SessionRef>,
     /// Cancellable full-text scan, separate from the bounded display cache.
     transcript_search: transcript_search::TranscriptSearch,
+    /// Briefly follow new best matches, unless the user starts browsing.
+    search_selection: filter::SearchSelection,
     /// Lightweight placeholder shown while the picker list is loading.
     loading_message: Option<String>,
     resume_latency: latency::Latency,
@@ -393,6 +397,7 @@ impl SessionPicker {
             cached_search_query: String::new(),
             cached_search_refs: Vec::new(),
             transcript_search: Default::default(),
+            search_selection: Default::default(),
             loading_message: None,
             resume_latency: Default::default(),
             latency_transcript_rendered: false,
@@ -450,6 +455,7 @@ impl SessionPicker {
             cached_search_query: String::new(),
             cached_search_refs: Vec::new(),
             transcript_search: Default::default(),
+            search_selection: Default::default(),
             loading_message: Some("Loading sessions…".to_string()),
             resume_latency: Default::default(),
             latency_transcript_rendered: false,
@@ -539,6 +545,7 @@ impl SessionPicker {
             cached_search_query: String::new(),
             cached_search_refs: Vec::new(),
             transcript_search: Default::default(),
+            search_selection: Default::default(),
             loading_message: None,
             resume_latency: Default::default(),
             latency_transcript_rendered: false,
@@ -774,6 +781,7 @@ impl SessionPicker {
         // session across a reordered/extended refresh.
         let restored = selected_id
             .as_deref()
+            .filter(|_| !self.search_selection.following())
             .and_then(|id| self.find_item_index_for_session_id(id));
         if let Some(idx) = restored {
             self.list_state.select(Some(idx));
@@ -887,6 +895,7 @@ impl SessionPicker {
     }
 
     fn toggle_selected_session(&mut self) {
+        self.search_selection.stop();
         let Some(session_id) = self.selected_session().map(|session| session.id.clone()) else {
             return;
         };
@@ -1152,7 +1161,7 @@ impl SessionPicker {
         let (tx, rx) = std::sync::mpsc::channel();
         let (workspace_tx, workspace_rx) = std::sync::mpsc::channel();
         let thread_session_id = cache_session_id.clone();
-        let _ = std::thread::Builder::new()
+        let worker = std::thread::Builder::new()
             .name("jcode-session-preview-loader".to_string())
             .spawn(move || {
                 let session_id = match &resume_target {
@@ -1169,6 +1178,10 @@ impl SessionPicker {
                     preview_metadata::hydrate_workspace(data, &target);
                 });
             });
+        if preview_result(worker, "loader worker startup").is_none() {
+            self.preview_load_failures.insert(cache_session_id);
+            return;
+        }
         self.pending_workspace_load = Some(progressive_preview::PendingWorkspaceLoad {
             session_id: cache_session_id,
             receiver: workspace_rx,

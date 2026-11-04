@@ -1175,8 +1175,11 @@ pub(crate) fn prepare_history_preview(
     diff_mode: crate::config::DiffDisplayMode,
 ) -> PreparedMessages {
     prepare_history_preview_bounded(messages, hidden_prompts, width, diff_mode, None)
-        .expect("an unbounded preview always completes")
+        .unwrap_or_else(|| preview_fallback::unavailable(width))
 }
+
+#[path = "ui_prepare/preview_fallback.rs"]
+mod preview_fallback;
 
 /// Choose scrollbar width without fully rendering overflowing history twice.
 /// The budget excludes caller-owned header and padding rows. The flag is the
@@ -1200,10 +1203,9 @@ pub(crate) fn prepare_history_preview_for_viewport(
         wide_width,
         diff_mode,
         Some(max_body_rows),
-    ) {
-        if wide.wrapped_lines.len() <= max_body_rows {
-            return (wide, false);
-        }
+    ) && wide.wrapped_lines.len() <= max_body_rows
+    {
+        return (wide, false);
     }
     (
         prepare_history_preview(messages, hidden_prompts, narrow_width, diff_mode),
