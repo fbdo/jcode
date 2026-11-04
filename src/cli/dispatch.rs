@@ -85,17 +85,8 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
     }
     // Explicit MCP management is independent of provider profiles, sessions,
     // and the daemon. In particular, list must remain offline and scriptable.
-    if let Some(Command::Trust { .. }) = &args.command {
-        let Some(Command::Trust { action }) = args.command else {
-            unreachable!("trust command checked above");
-        };
-        return commands::run_trust_command(action);
-    }
-    if matches!(args.command, Some(Command::Mcp { .. })) {
-        let Some(Command::Mcp { action }) = args.command else {
-            unreachable!("MCP command checked above");
-        };
-        return super::mcp::run(action).await;
+    if super::trust::is_offline_command(args.command.as_ref()) {
+        return super::trust::run_offline_command(args.command).await;
     }
     // The standalone picker is the entire command, not a resume ID lookup.
     // In particular, cancelling it must not continue into provider/agent startup
@@ -154,15 +145,10 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
         crate::config::invalidate_config_cache();
     }
 
-    if matches!(
-        args.command.as_ref(),
-        None | Some(Command::Connect) | Some(Command::Repl) | Some(Command::SelfDev { .. })
-    ) {
-        commands::maybe_prompt_for_project_trust()?;
-    }
+    super::trust::maybe_prompt_for_project_trust(args.command.as_ref())?;
 
     match args.command {
-        Some(Command::Mcp { action }) => super::mcp::run(action).await?,
+        Some(Command::Mcp { .. } | Command::Trust { .. }) => unreachable!("handled above"),
         Some(Command::Serve {
             temporary_server,
             owner_pid,
@@ -395,7 +381,6 @@ pub(crate) async fn run_main(mut args: Args) -> Result<()> {
             commands::run_usage_command(json).await?;
         }
         Some(Command::Telemetry(action)) => super::telemetry::run(action)?,
-        Some(Command::Trust { action }) => commands::run_trust_command(action)?,
         Some(Command::SelfDev { build }) => {
             selfdev::run_self_dev(build, args.resume).await?;
         }

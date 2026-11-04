@@ -583,7 +583,6 @@ impl Config {
         {
             self.hooks.user_prompt_submit_timeout_ms = parsed;
         }
-        }
         hook_env_override(
             &mut self.hooks.pre_tool_transform,
             "JCODE_HOOK_PRE_TOOL_TRANSFORM",

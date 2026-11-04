@@ -15,7 +15,6 @@ mod menubar;
 mod provider_setup;
 mod report_info;
 mod restart;
-mod trust;
 
 pub(crate) use super::auth_test::run_post_login_validation;
 #[cfg(test)]
@@ -32,7 +31,6 @@ pub use restart::{
     maybe_run_pending_restart_restore_on_startup, run_restart_clear_command,
     run_restart_restore_command, run_restart_save_command, run_restart_status_command,
 };
-pub(crate) use trust::{maybe_prompt_for_project_trust, run_trust_command};
 
 pub enum AmbientSubcommand {
     Status,

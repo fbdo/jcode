@@ -149,14 +149,14 @@ pub(crate) async fn run(action: McpCommand) -> Result<()> {
             );
         }
         McpCommand::Trust { path, yes } => {
-            super::commands::run_trust_command(super::args::TrustCommand::Grant {
+            super::trust::run_trust_command(super::args::TrustCommand::Grant {
                 path,
                 scope: super::args::TrustScopeArg::Mcp,
                 yes,
             })?
         }
         McpCommand::Revoke { path } => {
-            super::commands::run_trust_command(super::args::TrustCommand::Revoke {
+            super::trust::run_trust_command(super::args::TrustCommand::Revoke {
                 path,
                 scope: super::args::TrustScopeArg::Mcp,
             })?
