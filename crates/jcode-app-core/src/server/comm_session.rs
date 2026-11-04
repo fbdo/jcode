@@ -954,6 +954,38 @@ pub(super) async fn handle_comm_stop(
         return;
     };
 
+    // Removing the session forgets its hook identity, so fire
+    // `swarm_member_end` first. Stopping publishes no status update of its own.
+    let stopping_transition = {
+        // Claim the transition under the write lock: a concurrent completion
+        // update then sees `stopped` rather than `running`, so the end hook
+        // fires exactly once.
+        let mut members = swarm_members.write().await;
+        let coordinator_working_dir = members
+            .get(&req_session_id)
+            .and_then(|coordinator| coordinator.working_dir.as_ref())
+            .map(|dir| dir.display().to_string());
+        members.get_mut(&target_session).map(|member| {
+            let old_status = std::mem::replace(&mut member.status, "stopped".to_string());
+            let running_ms = member.last_status_change.elapsed().as_millis() as u64;
+            member.last_status_change = std::time::Instant::now();
+            (old_status, running_ms, coordinator_working_dir)
+        })
+    };
+    if let Some((old_status, running_ms, coordinator_working_dir)) = stopping_transition {
+        super::swarm_hooks::member_status_changed(
+            &super::swarm_hooks::StatusTransition {
+                session_id: &target_session,
+                old_status: &old_status,
+                new_status: "stopped",
+                status_changed: true,
+                duration_ms: running_ms,
+                completion_report: None,
+                coordinator_working_dir: coordinator_working_dir.as_deref(),
+            },
+        );
+    }
+
     let removed_agent = super::remove_session_entry(sessions, &target_session).await;
     let removed_live_agent = removed_agent.is_some();
     if let Some(agent_arc) = removed_agent {

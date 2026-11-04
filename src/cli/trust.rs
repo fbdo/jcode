@@ -34,6 +34,9 @@ fn scope_reviews(path: &Path) -> Result<Vec<ScopeReview>> {
             crate::logging::warn(&format!("Project hooks cannot be reviewed: {error}"));
         }
     }
+    if let Some(review) = crate::agent_def::agents_scope_review(path) {
+        reviews.push(review);
+    }
     if let Some(review) = crate::mcp::mcp_scope_review(path)? {
         reviews.push(review);
     }
