@@ -17,6 +17,7 @@ mod provider;
 mod response_recovery;
 mod skill_activation;
 mod runtime_recovery;
+mod skill_activation;
 mod status;
 mod stop_hook;
 mod streaming;
