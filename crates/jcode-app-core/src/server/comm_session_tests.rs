@@ -1308,3 +1308,69 @@ async fn spawn_admission_lock_serializes_per_swarm_only() {
 
 #[path = "comm_session_effort_tests.rs"]
 mod effort;
+
+#[tokio::test]
+async fn spawn_definition_and_untrusted_policy_follow_explicit_working_dir() {
+    let _guard = crate::storage::lock_test_env();
+    let home = tempfile::tempdir().unwrap();
+    let previous = std::env::var_os("JCODE_HOME");
+    crate::env::set_var("JCODE_HOME", home.path());
+
+    // Coordinator dir has no definitions; the explicit dir does.
+    let coordinator = tempfile::tempdir().unwrap();
+    let project = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(project.path().join(".git")).unwrap();
+    std::fs::create_dir_all(project.path().join(".jcode/agents")).unwrap();
+    std::fs::write(
+        project.path().join(".jcode/agents/x.md"),
+        "---\nname: x\ndescription: d\nmodel: opus\neffort: high\n---\nbody\n",
+    )
+    .unwrap();
+
+    let sessions = Arc::new(crate::server::session_manager::SessionManager::from_agents(
+        HashMap::new(),
+    ));
+    sessions
+        .register_new(
+            "req".to_string(),
+            test_agent_with_working_dir("req", &coordinator.path().display().to_string()).await,
+        )
+        .await
+        .unwrap();
+    let swarm_members = Arc::new(RwLock::new(HashMap::new()));
+
+    let explicit = resolve_spawn_working_dir(
+        Some(project.path().display().to_string()),
+        "req",
+        &sessions,
+        &swarm_members,
+    )
+    .await;
+    let fallback = resolve_spawn_working_dir(None, "req", &sessions, &swarm_members).await;
+
+    let from_coordinator =
+        crate::server::swarm::swarm_agent_defs::resolve(Some("x"), fallback.as_deref());
+    let from_explicit =
+        crate::server::swarm::swarm_agent_defs::resolve(Some("x"), explicit.as_deref());
+    let definition = from_explicit.as_ref().ok().and_then(|d| d.as_ref());
+    let (applied, request) = crate::server::swarm::swarm_agent_policy::for_spawn(
+        definition,
+        &crate::config::AgentsConfig::default(),
+        explicit.as_deref(),
+        None,
+        None,
+        false,
+    );
+
+    match previous {
+        Some(value) => crate::env::set_var("JCODE_HOME", value),
+        None => crate::env::remove_var("JCODE_HOME"),
+    }
+    assert!(from_coordinator.is_err());
+    assert_eq!(definition.unwrap().name, "x");
+    // Project policy is untrusted: persona resolves, policy does not apply.
+    assert_eq!(applied.model, None);
+    assert_eq!(applied.effort, None);
+    assert_eq!(request.model, None);
+    assert_eq!(request.effort, None);
+}

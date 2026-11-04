@@ -1,7 +1,7 @@
 //! Agent definitions at swarm spawn.
 //!
 //! `spawn` can name a definition with `agent`. The definition is resolved from
-//! the coordinator's working directory, and its persona is delivered once to
+//! the explicit spawn `working_dir` (else the coordinator's), and its persona is delivered once to
 //! the worker as a hidden message at the start of its transcript, so the system
 //! prompt (and prompt caching) stays untouched.
 
