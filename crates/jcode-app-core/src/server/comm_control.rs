@@ -554,6 +554,10 @@ fn spawn_assigned_task_run(
         );
         let event_tx = progress_events.sender();
         let start_message_index = agent.message_count();
+        crate::hooks::set_pending_prompt_origin(
+            agent.session_id(),
+            crate::hooks::PromptOrigin::SwarmMessage,
+        );
         let result = super::turn_failover::process_reserved_locked_message_with_server_failover(
             &mut agent,
             &turn_lease,

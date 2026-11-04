@@ -716,6 +716,11 @@ impl RemoteConnection {
         self.next_message_origin = Some("auto");
     }
 
+    /// Mark the next message as client-generated (poke, retry, system send).
+    pub fn mark_next_message_auto(&mut self) {
+        self.next_message_origin = Some("auto");
+    }
+
     pub async fn send_message_with_images_reminder_and_skill(
         &mut self,
         content: String,

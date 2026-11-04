@@ -206,6 +206,8 @@ where
 
     if let Some(message) = startup_message {
         persist_headed_startup_message(&new_session_id, message);
+        // The visible worker's TUI submits this saved text as its first turn
+        // without an origin; it is generated work, not a person's prompt.
         crate::hooks::set_pending_prompt_origin(
             &new_session_id,
             crate::hooks::PromptOrigin::SwarmSpawn,
@@ -633,6 +635,10 @@ pub(super) async fn spawn_swarm_agent(
                     crate::hooks::PromptOrigin::SwarmSpawn,
                 );
                 let start_message_index = agent.message_count();
+                crate::hooks::set_pending_prompt_origin(
+                    &sid_clone,
+                    crate::hooks::PromptOrigin::SwarmSpawn,
+                );
                 let result = process_reserved_locked_message_with_server_failover(
                     &mut agent,
                     &lease,
