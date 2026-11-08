@@ -21,6 +21,8 @@ use super::{
     SEARCH_CONTENT_BUDGET_BYTES, ServerGroup, SessionInfo,
 };
 
+mod mobile_inventory;
+
 use super::{ResumeTarget, SessionSource};
 
 #[cfg(test)]
@@ -305,6 +307,18 @@ fn load_recently_closed_sessions() -> Vec<SessionInfo> {
 /// Shared staged loader for the standalone and in-session pickers. A just-closed
 /// session is actionable before loading either the cache or the historical list.
 pub(crate) fn send_session_list_updates(sender: std::sync::mpsc::Sender<super::SessionListUpdate>) {
+    send_session_list_updates_with_discovery(
+        sender,
+        mobile_inventory::available(),
+        mobile_inventory::refresh,
+    );
+}
+
+fn send_session_list_updates_with_discovery(
+    sender: std::sync::mpsc::Sender<super::SessionListUpdate>,
+    discovery_available: bool,
+    refresh: impl FnOnce() -> Result<bool>,
+) {
     let recent = load_recently_closed_sessions();
     if !recent.is_empty()
         && sender
@@ -345,16 +359,68 @@ pub(crate) fn send_session_list_updates(sender: std::sync::mpsc::Sender<super::S
                     .flat_map(|g| g.sessions.iter().map(|s| s.id.clone())),
             )
             .collect();
-        orphans.extend(recent.into_iter().filter(|s| !loaded.contains(&s.id)));
+        orphans.extend(recent.iter().filter(|s| !loaded.contains(&s.id)).cloned());
         (groups, orphans)
     });
+    if !discovery_available {
+        let _ = sender.send(super::SessionListUpdate::Fresh(result));
+        return;
+    }
+    // Keep local results immediately usable while account/SSH discovery runs.
+    let local = match result {
+        Ok(result) => result,
+        Err(error) => {
+            let _ = sender.send(super::SessionListUpdate::Fresh(Err(error)));
+            return;
+        }
+    };
+    if sender
+        .send(super::SessionListUpdate::Cached(local.clone()))
+        .is_err()
+    {
+        return;
+    }
+    let result = match refresh() {
+        Ok(true) => {
+            invalidate_session_list_cache();
+            load_sessions_grouped().map(|(groups, mut orphans)| {
+                let loaded: HashSet<_> = orphans
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .chain(
+                        groups
+                            .iter()
+                            .flat_map(|g| g.sessions.iter().map(|s| s.id.as_str())),
+                    )
+                    .collect();
+                let recovered: Vec<_> = recent
+                    .into_iter()
+                    .filter(|s| !loaded.contains(s.id.as_str()))
+                    .collect();
+                orphans.extend(recovered);
+                (groups, orphans)
+            })
+        }
+        Ok(false) => Ok(local),
+        Err(error) => {
+            crate::logging::debug(&format!("Mobile resume discovery unavailable: {error:#}"));
+            let _ = sender.send(super::SessionListUpdate::CloudUnavailable(
+                "Cloud sessions could not be refreshed. Reopen /resume to retry.".into(),
+            ));
+            Ok(local)
+        }
+    };
     let _ = sender.send(super::SessionListUpdate::Fresh(result));
 }
 
 #[path = "loading_search_text.rs"]
 mod search_text;
+use super::transcript_search::source::{
+    BucketSink, Source, SourceBuckets, Walk, message_role_source, push_mark,
+};
 pub(super) use search_text::{
-    build_search_index, push_sampled_search_text, raw_value_display_text, raw_value_search_excerpt,
+    build_search_index, classified_search_excerpt, push_sampled_search_text,
+    raw_value_display_text, raw_value_search_excerpt,
 };
 
 #[cfg(test)]
@@ -1209,11 +1275,16 @@ struct SessionMessageSummaryData {
     assistant_message_count: usize,
     estimated_tokens: usize,
     first_user_prompt: Option<String>,
-    search_text: String,
+    search_text: SourceBuckets,
+    /// Newest stored message timestamp, of any role (prompts, replies, tools).
+    last_message_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl SessionMessageSummaryData {
     fn add_message(&mut self, message: &SessionMessageSummary) {
+        if let Some(ts) = message.timestamp {
+            self.last_message_at = Some(self.last_message_at.map_or(ts, |cur| cur.max(ts)));
+        }
         if !summary_message_is_visible_conversation(message) {
             return;
         }
@@ -1233,16 +1304,17 @@ impl SessionMessageSummaryData {
                 .estimated_tokens
                 .saturating_add(usage.total_tokens() as usize);
         }
-        if let Some(raw_content) = message.content_raw.as_deref() {
-            push_sampled_search_text(
-                &mut self.search_text,
-                raw_content,
-                INITIAL_TRANSCRIPT_SEARCH_BUDGET_BYTES,
-            );
+        if let Some(content) = &message.content_search {
+            self.search_text
+                .merge(content, INITIAL_TRANSCRIPT_SEARCH_BUDGET_BYTES);
         }
     }
 
     fn merge(&mut self, other: Self) {
+        self.last_message_at = match (self.last_message_at, other.last_message_at) {
+            (Some(a), Some(b)) => Some(a.max(b)),
+            (a, b) => a.or(b),
+        };
         self.visible_message_count = self
             .visible_message_count
             .saturating_add(other.visible_message_count);
@@ -1256,11 +1328,8 @@ impl SessionMessageSummaryData {
         if self.first_user_prompt.is_none() {
             self.first_user_prompt = other.first_user_prompt;
         }
-        push_sampled_search_text(
-            &mut self.search_text,
-            &other.search_text,
-            INITIAL_TRANSCRIPT_SEARCH_BUDGET_BYTES,
-        );
+        self.search_text
+            .merge(&other.search_text, INITIAL_TRANSCRIPT_SEARCH_BUDGET_BYTES);
     }
 }
 
@@ -1326,10 +1395,12 @@ struct SessionMessageSummary {
     // allocating or walking it. After display metadata is known, we inspect only
     // the raw prefix for old snapshots that predate `display_role`.
     content_starts_with_system_reminder: bool,
-    content_raw: Option<String>,
+    /// Bounded per-source samples of the content, classified by block type.
+    content_search: Option<SourceBuckets>,
     content_text: Option<String>,
     display_role: Option<StoredDisplayRole>,
     token_usage: Option<SessionTokenUsageSummary>,
+    timestamp: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 impl<'de> Deserialize<'de> for SessionMessageSummary {
@@ -1362,11 +1433,15 @@ impl<'de> Visitor<'de> for SessionMessageSummaryVisitor {
         let mut content: Option<&'de RawValue> = None;
         let mut display_role: Option<StoredDisplayRole> = None;
         let mut token_usage: Option<SessionTokenUsageSummary> = None;
+        let mut timestamp: Option<chrono::DateTime<chrono::Utc>> = None;
 
         while let Some(key) = map.next_key::<Cow<'de, str>>()? {
             match key.as_ref() {
                 "role" => {
                     role = Some(map.next_value()?);
+                }
+                "timestamp" => {
+                    timestamp = map.next_value()?;
                 }
                 "content" => {
                     content = Some(map.next_value()?);
@@ -1387,8 +1462,9 @@ impl<'de> Visitor<'de> for SessionMessageSummaryVisitor {
         let content_starts_with_system_reminder = matches!(role, Role::User)
             && display_role.is_none()
             && content.is_some_and(raw_content_starts_with_system_reminder);
-        let content_raw = if display_role.is_none() && !content_starts_with_system_reminder {
-            content.and_then(|raw| raw_value_search_excerpt(raw, self.content_excerpt_budget))
+        let content_search = if display_role.is_none() && !content_starts_with_system_reminder {
+            content
+                .and_then(|raw| classified_search_excerpt(raw, &role, self.content_excerpt_budget))
         } else {
             None
         };
@@ -1400,10 +1476,11 @@ impl<'de> Visitor<'de> for SessionMessageSummaryVisitor {
         Ok(SessionMessageSummary {
             role,
             content_starts_with_system_reminder,
-            content_raw,
+            content_search,
             content_text,
             display_role,
             token_usage,
+            timestamp,
         })
     }
 }
@@ -1702,7 +1779,11 @@ fn parse_jcode_session_info(
         &title,
         session.working_dir.as_deref(),
         session.save_label.as_deref(),
-        &session.messages.search_text,
+        &{
+            let mut text = String::new();
+            session.messages.search_text.render(&mut text);
+            text
+        },
     );
 
     Some(SessionInfo {
@@ -1715,7 +1796,12 @@ fn parse_jcode_session_info(
         user_message_count,
         assistant_message_count,
         created_at: session.created_at,
-        last_message_time: session.updated_at,
+        // Newest message, falling back to the save time for old snapshots
+        // whose messages predate per-message timestamps (or empty sessions).
+        last_message_time: session
+            .messages
+            .last_message_at
+            .unwrap_or(session.updated_at),
         last_active_at: session.last_active_at,
         working_dir: session.working_dir,
         model: session.model,
@@ -1907,7 +1993,7 @@ fn load_sessions_inner(bypass_cache: bool) -> Result<Vec<SessionInfo>> {
 /// ordinary conversations out of the most recent results. Saved and cloud
 /// sessions compete by recency too, rather than reserving extra visible slots.
 fn limit_sessions_by_recency(sessions: &mut Vec<SessionInfo>, limit: usize) {
-    sessions.sort_by(|a, b| b.last_message_time.cmp(&a.last_message_time));
+    sessions.sort_by_cached_key(|s| std::cmp::Reverse(super::session_resume_time(s)));
     let mut visible = 0;
     let mut debug = 0;
     sessions.retain(|session| {
@@ -2762,11 +2848,34 @@ fn include_cloud_sessions(
             sessions.push(session);
         }
         if let Some(session) = sessions.iter_mut().find(|session| session.id == id) {
+            // A migrated local snapshot is historical. Verified cloud metadata
+            // must win for display, project scoping, sorting, and search.
+            if let Some(title) = mobile_inventory::title(id) {
+                session.title = title;
+                session.working_dir = lease.repo_root.clone();
+                if let Ok(updated_at) = chrono::DateTime::parse_from_rfc3339(&lease.updated_at) {
+                    let updated_at = updated_at.with_timezone(&chrono::Utc);
+                    session.last_message_time = updated_at;
+                    session.last_active_at = Some(updated_at);
+                    session.needs_catchup =
+                        catchup_seen.needs_catchup(id, updated_at, &session.status);
+                }
+                session.search_index = build_search_index_from_summary(
+                    id,
+                    &session.short_name,
+                    &session.title,
+                    session.working_dir.as_deref(),
+                    session.save_label.as_deref(),
+                    &session.search_index,
+                );
+            }
             session.server_name = Some(format!("cloud: {host}"));
             session.server_icon = Some("☁".to_string());
+            // Host metadata, not transcript text from the preceding section.
+            push_mark(&mut session.search_index, Source::Other);
             session
                 .search_index
-                .push_str(&format!(" cloud {}", host.to_lowercase()));
+                .push_str(&format!("cloud {}", host.to_lowercase()));
         }
     }
 }
@@ -2779,7 +2888,8 @@ fn cloud_session_stub(lease: &storage::SessionLease) -> SessionInfo {
     let updated_at = chrono::DateTime::parse_from_rfc3339(&lease.updated_at)
         .map(|time| time.with_timezone(&chrono::Utc))
         .unwrap_or_default();
-    let title = format!("{short_name} (cloud session)");
+    let title =
+        mobile_inventory::title(id).unwrap_or_else(|| format!("{short_name} (cloud session)"));
     let search_index = build_search_index(
         id,
         &short_name,
