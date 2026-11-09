@@ -182,6 +182,7 @@ async fn session_end_hook_keeps_worker_swarm_identity_after_session_removal() {
             parent_session_id: "coord".into(),
             label: Some("task".into()),
             agent_type: Some("reviewer".into()),
+            working_dir: None,
         },
     );
     let sessions = Arc::new(crate::server::session_manager::SessionManager::from_agents(

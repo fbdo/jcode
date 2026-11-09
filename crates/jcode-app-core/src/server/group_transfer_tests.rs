@@ -317,6 +317,7 @@ async fn import_restores_worker_hook_identity() {
         parent_session_id: "hook-leader".into(),
         label: Some("task".into()),
         agent_type: Some("reviewer".into()),
+        working_dir: None,
     };
     let mut group = swarm("hook-swarm", &["hook-leader", "hook-worker"]);
     group.members[1].hook_identity = Some(identity.clone());
