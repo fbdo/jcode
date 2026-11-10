@@ -47,7 +47,7 @@ pub fn is_cache_ttl_1h() -> bool {
 /// a plain Jcode User-Agent, bill them to the same subscription bucket
 /// (identical `anthropic-ratelimit-unified-*` headers), and cache prompts
 /// normally. The only required piece is the billing attribution system block,
-/// see `jcode_provider_anthropic::OAUTH_BILLING_HEADER` and
+/// see `jcode_provider_core::claude_code_billing_header` and
 /// docs/ANTHROPIC_OAUTH_IDENTITY_PROBE_2026_11_05.md.
 ///
 /// The name is kept so existing call sites don't churn.

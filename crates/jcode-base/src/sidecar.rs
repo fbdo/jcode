@@ -42,9 +42,17 @@ const OAUTH_BETA_HEADERS: &str = "oauth-2025-04-20";
 
 /// Billing attribution block that Claude subscription (OAuth) requests need.
 /// Anthropic strips it before the model sees it. No identity sentence is sent,
-/// see `OAUTH_BILLING_HEADER` in jcode-provider-anthropic.
-const CLAUDE_OAUTH_BILLING_BLOCK: &str =
-    "x-anthropic-billing-header: cc_version=2.1.280; cc_entrypoint=sdk-cli; cch=33f85;";
+/// see `claude_code_billing_header` in jcode-provider-core, which owns the
+/// Claude Code version (overridable with `JCODE_CLAUDE_CODE_VERSION`).
+fn claude_oauth_billing_block() -> &'static str {
+    static BLOCK: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BLOCK.get_or_init(|| {
+        format!(
+            "x-anthropic-billing-header: {}",
+            jcode_provider_core::claude_code_billing_header()
+        )
+    })
+}
 
 /// Maximum tokens for sidecar responses (keep small for speed/cost)
 const DEFAULT_MAX_TOKENS: u32 = 1024;
@@ -1155,7 +1163,7 @@ fn build_claude_system_param(system: &str) -> Option<ClaudeApiSystem<'_>> {
     let mut blocks = Vec::new();
     blocks.push(ClaudeApiSystemBlock {
         block_type: "text",
-        text: CLAUDE_OAUTH_BILLING_BLOCK,
+        text: claude_oauth_billing_block(),
     });
     if !system.is_empty() {
         blocks.push(ClaudeApiSystemBlock {
@@ -1724,7 +1732,7 @@ mod tests {
         let ClaudeApiSystem::Blocks(oauth_blocks) =
             build_claude_system_param("be terse").expect("oauth system present");
         assert_eq!(oauth_blocks.len(), 2);
-        assert_eq!(oauth_blocks[0].text, CLAUDE_OAUTH_BILLING_BLOCK);
+        assert_eq!(oauth_blocks[0].text, claude_oauth_billing_block());
         assert_eq!(oauth_blocks[1].text, "be terse");
         assert!(
             !oauth_blocks

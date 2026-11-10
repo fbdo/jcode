@@ -11,7 +11,7 @@ Usage: scripts/anthropic_oauth_identity_probe.py [model]   (default haiku)
 import json,uuid,urllib.request,urllib.error,os,sys
 d=json.load(open(os.path.expanduser('~/.jcode/auth.json')))
 tok=d['anthropic_accounts'][0]['access']
-BILL="x-anthropic-billing-header: cc_version=2.1.280; cc_entrypoint=sdk-cli; cch=33f85;"
+BILL="x-anthropic-billing-header: cc_version=2.1.290; cc_entrypoint=sdk-cli; cch=33f85;"
 SDK="You are a Claude agent, built on Anthropic's Claude Agent SDK."
 CC="You are Claude Code, Anthropic's official CLI for Claude."
 JC="You are jcode, powered by Claude Code. You are a third-party CLI, not the official Claude Code CLI."
@@ -33,7 +33,7 @@ for name,blocks in variants.items():
         "messages":[{"role":"user","content":"Who are you, in one sentence?"}]}
   req=urllib.request.Request("https://api.anthropic.com/v1/messages?beta=true",data=json.dumps(body).encode(),method="POST",headers={
    "Authorization":"Bearer "+tok,"content-type":"application/json","anthropic-version":"2023-06-01",
-   "anthropic-beta":BETA,"User-Agent":"claude-cli/2.1.280 (external, sdk-cli)","x-app":"cli",
+   "anthropic-beta":BETA,"User-Agent":"claude-cli/2.1.290 (external, sdk-cli)","x-app":"cli",
    "X-Claude-Code-Session-Id":sid,"anthropic-dangerous-direct-browser-access":"true"})
   try:
     r=json.load(urllib.request.urlopen(req,timeout=60))

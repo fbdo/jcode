@@ -1,8 +1,8 @@
 import json,uuid,urllib.request,urllib.error,os,sys
 tok=json.load(open(os.path.expanduser('~/.jcode/auth.json')))['anthropic_accounts'][0]['access']
-BILL="x-anthropic-billing-header: cc_version=2.1.280; cc_entrypoint=sdk-cli; cch=33f85;"
+BILL="x-anthropic-billing-header: cc_version=2.1.290; cc_entrypoint=sdk-cli; cch=33f85;"
 model=sys.argv[1] if len(sys.argv)>1 else "claude-opus-4-5"
-full={"User-Agent":"claude-cli/2.1.280 (external, sdk-cli)","x-app":"cli","anthropic-dangerous-direct-browser-access":"true",
+full={"User-Agent":"claude-cli/2.1.290 (external, sdk-cli)","x-app":"cli","anthropic-dangerous-direct-browser-access":"true",
  "X-Stainless-Lang":"js","X-Stainless-Runtime":"node","X-Stainless-Package-Version":"0.81.0"}
 BETA_FULL="claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14"
 def run(name,headers,beta,system,tools=None):
