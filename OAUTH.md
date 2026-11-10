@@ -111,7 +111,7 @@ Notes:
   OAuth requests even if the token is otherwise valid.
 - Anthropic gates newer models on a minimum Claude Code version and rejects an
   older identity with `400 claude_code_version_too_old` (for example
-  `claude-opus-5-5` requires 2.1.280). jcode presents one version in the
+  `claude-opus-5-5` requires 2.1.280, `claude-fable-5-2` requires 2.1.290). jcode presents one version in the
   `cc_version` billing attribution (main requests and sidecar) and the OAuth
   preflight `app_version`; the User-Agent identifies jcode itself. If the floor moves before a jcode release, set
   `JCODE_CLAUDE_CODE_VERSION` (for example `JCODE_CLAUDE_CODE_VERSION=2.1.281`)

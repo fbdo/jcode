@@ -16,7 +16,7 @@ use std::sync::OnceLock;
 /// older identity with `claude_code_version_too_old` (#1134, #1390). Bump this
 /// default when the floor moves; users can also override it at runtime with
 /// [`CLAUDE_CODE_VERSION_ENV`] instead of waiting for a release.
-pub const CLAUDE_CODE_VERSION_DEFAULT: &str = "2.1.280";
+pub const CLAUDE_CODE_VERSION_DEFAULT: &str = "2.1.290";
 
 /// Environment variable that overrides [`CLAUDE_CODE_VERSION_DEFAULT`].
 pub const CLAUDE_CODE_VERSION_ENV: &str = "JCODE_CLAUDE_CODE_VERSION";
@@ -24,7 +24,7 @@ pub const CLAUDE_CODE_VERSION_ENV: &str = "JCODE_CLAUDE_CODE_VERSION";
 /// Resolve the Claude Code version from an optional override.
 ///
 /// The value is sent in HTTP headers, so only a dotted numeric version
-/// (`2.1.280`) is accepted; anything else falls back to the default rather
+/// (`2.1.290`) is accepted; anything else falls back to the default rather
 /// than producing an invalid header.
 pub fn resolve_claude_code_version(raw: Option<&str>) -> String {
     raw.map(str::trim)
@@ -516,12 +516,12 @@ mod tests {
             "latest",
             "1",
             "2801",
-            "2.1.280-beta",
+            "2.1.290-beta",
             "2..1",
             ".2.1",
             "2.1.",
-            "2.1.280 (external)",
-            "2.1.280\r\nX-Injected: 1",
+            "2.1.290 (external)",
+            "2.1.290\r\nX-Injected: 1",
             "1.2.3.4.5.6.7.8.9.10.11.12.13.14.15.16",
         ] {
             assert_eq!(
@@ -535,8 +535,8 @@ mod tests {
     #[test]
     fn claude_oauth_billing_header_uses_shared_version() {
         assert_eq!(
-            claude_code_billing_header_for("2.1.280"),
-            "cc_version=2.1.280; cc_entrypoint=sdk-cli; cch=33f85;"
+            claude_code_billing_header_for("2.1.290"),
+            "cc_version=2.1.290; cc_entrypoint=sdk-cli; cch=33f85;"
         );
         let version = claude_code_version();
         assert!(claude_code_billing_header().starts_with(&format!("cc_version={version};")));
