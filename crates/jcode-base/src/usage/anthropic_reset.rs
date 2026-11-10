@@ -65,7 +65,7 @@ fn authorize(request: reqwest::RequestBuilder, access_token: &str) -> reqwest::R
             .header("Content-Type", "application/json")
             .header(
                 "User-Agent",
-                crate::provider::anthropic::claude_cli_user_agent(),
+                crate::provider::anthropic::CLAUDE_CLI_USER_AGENT,
             )
             .header("anthropic-beta", "oauth-2025-04-20"),
         &crate::provider::anthropic::new_oauth_request_id(),
