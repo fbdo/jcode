@@ -87,7 +87,11 @@ fn resumed_local_snapshot_keeps_polling_so_card_does_not_go_stale() {
         .to_string()
     };
     // Resume seeds an authoritative snapshot, after which disk is ignored.
-    app.receive_remote_todos("resumed-local-snapshot".into(), payload("in_progress"));
+    assert!(app.receive_remote_todos("resumed-local-snapshot".into(), payload("in_progress")));
+    assert!(
+        !app.receive_remote_todos("resumed-local-snapshot".into(), payload("in_progress")),
+        "an identical poll answer must not ask for a repaint"
+    );
     app.toggle_todo_card();
     assert!(
         app.remote_todos_refresh_due(),
@@ -100,6 +104,76 @@ fn resumed_local_snapshot_keeps_polling_so_card_does_not_go_stale() {
         .find(|m| m.role == "todos")
         .unwrap();
     assert!(card.content.contains("completed"), "{}", card.content);
+}
+
+#[test]
+fn background_turn_polls_todos_slowly_and_catches_up_on_focus() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_session_id = Some("background-turn".into());
+    let payload = serde_json::json!({
+        "todos": [{"id":"lane", "content":"Lane", "priority":"high", "status":"pending"}],
+        "plan": {}, "goals": []
+    })
+    .to_string();
+    app.receive_remote_todos("background-turn".into(), payload);
+    app.toggle_todo_card();
+    app.is_processing = true;
+    let five_seconds_ago = std::time::Instant::now() - std::time::Duration::from_secs(5);
+
+    app.remote_todos_requested_at = Some(five_seconds_ago);
+    assert!(
+        app.remote_todos_refresh_due(),
+        "a focused turn keeps the 2s poll"
+    );
+
+    app.set_client_focused(false);
+    app.remote_todos_requested_at = Some(five_seconds_ago);
+    assert!(
+        !app.remote_todos_refresh_due(),
+        "an unfocused turn must not poll every 2s"
+    );
+
+    app.set_client_focused(true);
+    assert!(
+        app.remote_todos_refresh_due(),
+        "gaining focus refreshes at once"
+    );
+}
+
+#[test]
+fn a_pushing_server_ends_the_periodic_todo_poll() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.remote_session_id = Some("pushed-turn".into());
+    let payload = serde_json::json!({
+        "todos": [{"id":"lane", "content":"Lane", "priority":"high", "status":"pending"}],
+        "plan": {}, "goals": []
+    })
+    .to_string();
+    app.receive_remote_todos("pushed-turn".into(), payload);
+    app.toggle_todo_card();
+    app.is_processing = true;
+    let a_minute_ago = std::time::Instant::now() - std::time::Duration::from_secs(60);
+
+    app.remote_todos_requested_at = Some(a_minute_ago);
+    assert!(
+        app.remote_todos_refresh_due(),
+        "a server that does not push is still polled"
+    );
+
+    app.remote_todos_pushed = true;
+    app.remote_todos_requested_at = Some(a_minute_ago);
+    assert!(
+        !app.remote_todos_refresh_due(),
+        "a focused turn must not poll a server that pushes"
+    );
+
+    app.request_remote_todos_refresh_soon();
+    assert!(
+        app.remote_todos_refresh_due(),
+        "an explicit refresh still asks once"
+    );
 }
 
 #[test]
@@ -275,8 +349,8 @@ fn refresh_todo_card_updates_content_when_todos_change() {
         confidence: Some(crate::todo::ConfidenceState::from_legacy_score(70)),
         completion_confidence: None,
         confidence_history: Vec::new(),
-        external_blocker: None,
-        completely_blocked: None,
+        waiting_reason: None,
+        requires_user_auth: None,
         waiting_on: Vec::new(),
         blocked_by: Vec::new(),
         assigned_to: None,
@@ -326,8 +400,8 @@ fn refresh_todo_card_updates_content_when_goal_scores_change() {
         confidence: Some(crate::todo::ConfidenceState::from_legacy_score(80)),
         completion_confidence: None,
         confidence_history: Vec::new(),
-        external_blocker: None,
-        completely_blocked: None,
+        waiting_reason: None,
+        requires_user_auth: None,
         waiting_on: Vec::new(),
         blocked_by: Vec::new(),
         assigned_to: None,
@@ -390,8 +464,8 @@ fn pinned_band_todo(id: &str, content: &str, status: &str) -> crate::todo::TodoI
         confidence: Some(crate::todo::ConfidenceState::from_legacy_score(80)),
         completion_confidence: None,
         confidence_history: Vec::new(),
-        external_blocker: None,
-        completely_blocked: None,
+        waiting_reason: None,
+        requires_user_auth: None,
         waiting_on: Vec::new(),
         blocked_by: Vec::new(),
         assigned_to: None,
@@ -1143,7 +1217,7 @@ fn debug_inject_todos_preserves_role_and_renders_fixture() {
     let _env_lock = crate::storage::lock_test_env();
     let _render_lock = crate::tui::ui::render_state_test_lock();
     let mut app = create_test_app();
-    let payload = serde_json::json!({"todos":[{"id":"debug", "content":"Authorize", "status":"pending", "priority":"high", "completely_blocked":{"reason":"Only the owner can approve"}}]});
+    let payload = serde_json::json!({"todos":[{"id":"debug", "content":"Authorize", "status":"pending", "priority":"high", "requires_user_auth":{"reason":"Only the owner can approve"}}]});
     let response = app.handle_debug_command(&format!("inject:todos:{payload}"));
     assert!(
         response.starts_with("OK: injected todos message"),
@@ -1160,7 +1234,30 @@ fn debug_inject_todos_preserves_role_and_renders_fixture() {
     let mut terminal = ratatui::Terminal::new(backend).unwrap();
     let text = render_and_snap(&app, &mut terminal);
     assert!(
-        text.contains("✋") && text.contains("Completely blocked"),
+        text.contains("✋") && text.contains("Needs your login"),
         "{text}"
     );
+}
+
+#[test]
+fn expanded_pinned_todo_band_scrolls_when_taller_than_budget() {
+    let _env_lock = crate::storage::lock_test_env();
+    let _render_lock = crate::tui::ui::render_state_test_lock();
+    let _pin = PinTodosEnvGuard::enable();
+    let mut app = create_test_app();
+    app.pinned_todos_expanded = true;
+    let todos: Vec<_> = (0..40)
+        .map(|i| pinned_band_todo(&format!("t{i}"), &format!("Task number {i}"), "pending"))
+        .collect();
+    app.pinned_todos_payload = Some(serde_json::json!({ "todos": todos }).to_string());
+    crate::tui::ui::viewport::reset_pinned_todo_scroll();
+
+    let (lines, _) = crate::tui::ui::viewport::pinned_todo_band_lines(&app, 80, 30);
+    assert!(lines.len() <= 21, "expanded band is bounded: {}", lines.len());
+    assert!(lines[0].to_string().contains("scroll"));
+    crate::tui::ui::viewport::publish_pinned_todo_scroll_for_test();
+    assert!(crate::tui::ui::viewport::scroll_pinned_todos(3));
+    let (scrolled, _) = crate::tui::ui::viewport::pinned_todo_band_lines(&app, 80, 30);
+    assert_ne!(lines[1].to_string(), scrolled[1].to_string());
+    crate::tui::ui::viewport::reset_pinned_todo_scroll();
 }

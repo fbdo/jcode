@@ -15,7 +15,13 @@ pub(crate) enum Source {
     /// Metadata, system reminders, and untagged strings.
     #[default]
     Other,
+    /// Working directory and project name: a deliberate way to find a
+    /// session, but weaker than words from the conversation itself.
+    Project,
     Assistant,
+    /// Tool-call intent labels: the agent's one-line statement of what it is
+    /// doing, usually a close paraphrase of the user's request.
+    Intent,
     User,
 }
 
@@ -24,7 +30,9 @@ impl Source {
     pub(crate) fn weight(self) -> u32 {
         match self {
             Source::User => 8,
+            Source::Intent => 6,
             Source::Assistant => 4,
+            Source::Project => 3,
             Source::Other | Source::ToolInput => 2,
             Source::Thinking | Source::ToolOutput => 1,
         }
@@ -39,8 +47,48 @@ impl Source {
 }
 
 /// Weight of the best source per token, summed across query tokens.
+#[cfg(test)]
 pub(crate) fn source_weight(best: &[Option<Source>]) -> u32 {
     best.iter().flatten().map(|source| source.weight()).sum()
+}
+
+/// Like [`source_weight`], but scaled by how rare each query word is, so a
+/// distinctive word counts for much more than one found in most sessions.
+pub(crate) fn weighted_source_weight(best: &[Option<Source>], idf: &[u32]) -> u32 {
+    best.iter()
+        .enumerate()
+        .filter_map(|(index, source)| {
+            source.map(|source| source.weight() * idf.get(index).copied().unwrap_or(UNIFORM_IDF))
+        })
+        .sum()
+}
+
+/// Weight used for every word before document frequencies are known.
+pub(crate) const UNIFORM_IDF: u32 = 100;
+
+/// Per-token rarity weights from how many sessions mention each token.
+/// Words found nearly everywhere ("do", "that") keep a small floor so they
+/// still break ties, while a word in a handful of sessions dominates.
+pub(crate) fn idf_weights<'a>(
+    tokens: &[String],
+    indexes: impl Iterator<Item = &'a str>,
+) -> Vec<u32> {
+    let mut df = vec![0usize; tokens.len()];
+    let mut total = 0usize;
+    for index in indexes {
+        total += 1;
+        for (count, token) in df.iter_mut().zip(tokens) {
+            if index.contains(token.as_str()) {
+                *count += 1;
+            }
+        }
+    }
+    df.into_iter()
+        .map(|count| {
+            let idf = ((total as f64 + 1.0) / (count as f64 + 1.0)).ln();
+            10 + (idf * 100.0).round() as u32
+        })
+        .collect()
 }
 
 /// Keep the stronger of two per-token observations.
@@ -56,13 +104,34 @@ pub(crate) fn stronger(a: Option<Source>, b: Option<Source>) -> Option<Source> {
 /// character, so a typed query never matches it.
 const MARK: char = '\u{1f}';
 
+/// Count mentions of each query term in explicitly tagged user text,
+/// saturating at four per term. Untagged legacy indexes and generated titles
+/// must not masquerade as repeated user requests.
+pub(crate) fn user_mentions(index: &str, tokens: &[String]) -> usize {
+    let mut counts = vec![0usize; tokens.len()];
+    for section in index.split(MARK).skip(1) {
+        let Some(text) = section.strip_prefix(Source::User.tag()) else {
+            continue;
+        };
+        for (count, token) in counts.iter_mut().zip(tokens) {
+            if !token.is_empty() && *count < 4 {
+                *count += text.match_indices(token.as_str()).take(4 - *count).count();
+            }
+        }
+    }
+    counts.into_iter().sum()
+}
+
 impl Source {
-    const ALL: [Source; 6] = [
+    /// Ordered weakest to strongest, matching the tag digits.
+    const ALL: [Source; 8] = [
         Source::ToolOutput,
         Source::Thinking,
         Source::ToolInput,
         Source::Other,
+        Source::Project,
         Source::Assistant,
+        Source::Intent,
         Source::User,
     ];
 
@@ -72,8 +141,10 @@ impl Source {
             Source::Thinking => '1',
             Source::ToolInput => '2',
             Source::Other => '3',
-            Source::Assistant => '4',
-            Source::User => '5',
+            Source::Project => '4',
+            Source::Assistant => '5',
+            Source::Intent => '6',
+            Source::User => '7',
         }
     }
 
@@ -148,7 +219,7 @@ pub(crate) fn metadata_sources(
 /// keeps a flood of tool output from evicting the user's prompts.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct SourceBuckets {
-    text: [String; 6],
+    text: [String; 8],
 }
 
 impl SourceBuckets {
@@ -380,6 +451,10 @@ impl Visitor<'_> for KeySeed {
             }
             "toolUseResult" | "tool_use_result" | "output" | "tool_output" | "stdout"
             | "stderr" => Key::Force(Source::ToolOutput),
+            // Tool-call intent labels are the agent's own one-line summary of
+            // what it is doing, so they rank above assistant prose and far
+            // above the raw arguments around them.
+            "intent" => Key::Force(Source::Intent),
             "meta" | "metadata" => Key::Force(Source::Other),
             _ => Key::Plain,
         })
@@ -472,6 +547,10 @@ mod tests {
         assert_eq!(source_of(json, "THOUGHT"), Source::Thinking);
         assert_eq!(source_of(json, "REPLY"), Source::Assistant);
         assert_eq!(source_of(json, "CMD"), Source::ToolInput);
+        let with_intent = r#"{"role":"assistant","content":[
+                {"type":"tool_use","id":"t","name":"bash","input":{"command":"CMD","intent":"WHY"}}]}"#;
+        assert_eq!(source_of(with_intent, "WHY"), Source::Intent);
+        assert_eq!(source_of(with_intent, "CMD"), Source::ToolInput);
         assert_eq!(source_of(json, "OUT"), Source::ToolOutput);
         // Identifiers beside a prompt are not something the user typed.
         assert_eq!(source_of(json, "m1"), Source::Other);
@@ -504,7 +583,11 @@ mod tests {
 
     #[test]
     fn weights_prefer_user_then_assistant_then_tools_and_thinking() {
-        assert!(Source::User.weight() > Source::Assistant.weight());
+        assert!(Source::User.weight() > Source::Intent.weight());
+        assert!(Source::Intent.weight() > Source::Assistant.weight());
+        for pair in Source::ALL.windows(2) {
+            assert!(pair[0].weight() <= pair[1].weight());
+        }
         assert!(Source::Assistant.weight() > Source::ToolInput.weight());
         assert!(Source::ToolInput.weight() > Source::ToolOutput.weight());
         assert_eq!(Source::Thinking.weight(), Source::ToolOutput.weight());
@@ -520,6 +603,29 @@ mod tests {
         let sources = metadata_sources(&["deploy the thing"], "deploy api", &tokens);
         assert_eq!(sources, [Some(Source::User), Some(Source::Other), None]);
         assert_eq!(source_weight(&sources), 10);
+    }
+
+    #[test]
+    fn index_header_ranks_project_above_ids_and_below_replies() {
+        let index = crate::tui::session_picker::loading::build_search_index(
+            "session_abc123",
+            "jcode",
+            "Fix picker",
+            Some("/home/me/jcode"),
+            None,
+            &[],
+        );
+        let tokens: Vec<String> = ["abc123", "jcode", "fix"].map(String::from).into();
+        assert_eq!(
+            metadata_sources(&["fix picker"], &index, &tokens),
+            [
+                Some(Source::Other),
+                Some(Source::Project),
+                Some(Source::User)
+            ]
+        );
+        assert!(Source::Project.weight() > Source::ToolInput.weight());
+        assert!(Source::Project.weight() < Source::Assistant.weight());
     }
 
     #[test]

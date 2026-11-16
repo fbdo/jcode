@@ -457,16 +457,33 @@ pub(super) async fn spawn_swarm_agent(
                 }
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
-                let context =
-                    super::swarm::swarm_hooks::spawn_context(swarm_id, req_session_id, label.as_deref())
-                        .with_client_terminal_env(client_terminal_env.clone());
-                spawn_visible_session_window_with_context(
+                let context = super::swarm::swarm_hooks::spawn_context(
+                    swarm_id,
+                    req_session_id,
+                    label.as_deref(),
+                )
+                .with_client_terminal_env(client_terminal_env.clone());
+                // Register the worker identity before the terminal starts, so
+                // its first prompt hook already carries agent_id/swarm. Undone
+                // below if the window does not launch.
+                super::swarm::swarm_hooks::register_worker_identity(
+                    session_id,
+                    swarm_id,
+                    req_session_id,
+                    label.as_deref(),
+                    definition.as_ref().map(|d| d.name.as_str()),
+                );
+                let launched = spawn_visible_session_window_with_context(
                     session_id,
                     cwd,
                     selfdev_requested,
                     provider_key,
                     &context,
-                )
+                );
+                if !matches!(launched, Ok(true)) {
+                    crate::hooks::forget_swarm_identity(session_id);
+                }
+                launched
             },
         ),
     };
@@ -979,6 +996,9 @@ pub(super) async fn handle_comm_stop(
         return;
     };
 
+    // Cancel the worker's in-flight turn before its handles are removed, or it
+    // keeps generating and editing files with nothing left to stop it by.
+    super::swarm::cancel_active_turns(&target_session);
     // Removing the session forgets its hook identity, so fire
     // `swarm_member_end` first. Stopping publishes no status update of its own.
     let stopping_transition = {

@@ -75,6 +75,7 @@ mod memory_estimates;
 mod memory_ui;
 #[path = "ui_messages.rs"]
 mod messages;
+pub(crate) use messages::strip_todo_tool_output_headers;
 #[path = "ui_onboarding.rs"]
 mod onboarding;
 mod output_style;
@@ -2310,9 +2311,14 @@ pub(crate) fn line_left_margins_for_area(lines: &[Line<'static>], area_width: u1
     lines
         .iter()
         .map(|line| {
+            let alignment = line.alignment.unwrap_or(Alignment::Left);
+            if alignment == Alignment::Left {
+                // Left-aligned lines never have a margin, so skip measuring them.
+                return 0;
+            }
             let used = line.width().min(area_width as usize) as u16;
             let total_margin = area_width.saturating_sub(used);
-            match line.alignment.unwrap_or(Alignment::Left) {
+            match alignment {
                 Alignment::Left => 0,
                 Alignment::Center => total_margin / 2,
                 Alignment::Right => total_margin,
@@ -2953,9 +2959,9 @@ pub fn draw(frame: &mut Frame, app: &dyn TuiState) {
     // epoch here so the memo is scoped to exactly this frame.
     app.advance_command_suggestions_epoch();
     crate::tui::mermaid::begin_terminal_image_frame();
-    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    match jcode_tui_style::catch_recoverable_panic(|| {
         crate::tui::markdown::with_deferred_mermaid_render_context(|| draw_inner(frame, app))
-    })) {
+    }) {
         Ok(()) => layout_support::draw_side_panel_restore(frame, app),
         Err(payload) => render_recovered_panic_frame(frame, &payload),
     }

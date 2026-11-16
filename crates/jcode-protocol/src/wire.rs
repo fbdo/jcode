@@ -134,6 +134,21 @@ pub enum Request {
     #[serde(rename = "get_todos")]
     GetTodos { id: u64 },
 
+    /// Report whether this client's window has focus. Sent only to servers
+    /// that advertise [`crate::CLIENT_FOCUS_CAPABILITY`]; never acknowledged.
+    ///
+    /// `hidden` says an unfocused window is known to be out of sight (another
+    /// workspace, a background multiplexer window, the display off), which
+    /// lets the server batch its stream more coarsely. Absent means not known
+    /// to be hidden, so older clients and servers interoperate unchanged.
+    #[serde(rename = "client_focus")]
+    ClientFocus {
+        id: u64,
+        focused: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        hidden: bool,
+    },
+
     /// Execute a debug command (debug socket only)
     #[serde(rename = "debug_command")]
     DebugCommand {
@@ -326,6 +341,15 @@ pub enum Request {
         mode: TranscriptMode,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         session_id: Option<String>,
+    },
+
+    /// Live push-to-talk state for a TUI session (waveform, live text).
+    /// Fire-and-forget: the server answers `Done` once it has fanned out.
+    #[serde(rename = "voice_activity")]
+    VoiceActivity {
+        id: u64,
+        session_id: String,
+        activity: VoiceActivity,
     },
 
     /// Execute a shell command from `!cmd` in the active remote session.
@@ -916,7 +940,7 @@ pub enum Request {
 }
 
 mod events;
-pub use events::{AccountUsageSnapshot, ServerEvent, TurnIdentity};
+pub use events::{AccountUsageSnapshot, AccountUsageWindow, ServerEvent, TurnIdentity};
 
 impl std::fmt::Debug for Request {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
