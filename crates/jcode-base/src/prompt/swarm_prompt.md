@@ -5,7 +5,9 @@ The named todo lane is the source of truth: tasks are prepopulated into the work
 and updates sync only to that lane. `prompt` adds context, not tasks.
 Missing lanes are created from `prompt` or `label`.
 
-If the swarm tool lists an `agent` property, pass a name on spawn for that persona.
+- When the swarm tool lists an `agent` property, pass one of its names on spawn to give the
+  worker that definition's persona. Unknown names are rejected with the valid list.
+
 Only the root session may spawn agents. Workers report back. The root owns the
 outcome: integrate reports, reassign idle workers, keep working yourself, and
 `await_members` before yielding while workers run. Stop unused workers when done.
