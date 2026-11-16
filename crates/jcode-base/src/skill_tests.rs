@@ -790,10 +790,10 @@ fn lenient_frontmatter_handles_quotes_and_inline_tools() {
     .unwrap();
     assert_eq!(frontmatter.name, "quoted");
     assert_eq!(frontmatter.description, "first: part continued line");
-    assert!(matches!(
-        frontmatter.allowed_tools,
-        Some(AllowedTools::CommaDelimited(ref tools)) if tools == "bash, read"
-    ));
+    assert_eq!(
+        frontmatter.allowed_tools.map(ListValue::into_comma_list),
+        Some(vec!["bash".to_string(), "read".to_string()])
+    );
 }
 
 #[test]

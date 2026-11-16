@@ -1933,7 +1933,7 @@ mod tests {
                 let mut blocks = Vec::new();
                 if oauth {
                     blocks.push(
-                        serde_json::json!({"type": "text", "text": CLAUDE_OAUTH_BILLING_BLOCK}),
+                        serde_json::json!({"type": "text", "text": claude_oauth_billing_block()}),
                     );
                 }
                 if !system.is_empty() {
