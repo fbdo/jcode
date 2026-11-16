@@ -70,6 +70,30 @@ pub enum TranscriptMode {
     Send,
 }
 
+/// Push-to-talk state captured outside the TUI (for example `jcode companion`),
+/// shown in the target session's status line.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum VoiceActivity {
+    /// Microphone open. `levels` holds recent RMS levels (`0.0..=1.0`),
+    /// oldest first. `live` is the partial transcript so far.
+    Recording {
+        #[serde(default)]
+        elapsed_ms: u64,
+        #[serde(default)]
+        levels: Vec<f32>,
+        #[serde(default)]
+        live: String,
+    },
+    /// Key released, waiting for the final transcript.
+    Transcribing {
+        #[serde(default)]
+        live: String,
+    },
+    /// Capture ended (sent, cancelled or failed). Clears the indicator.
+    Idle,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CommDeliveryMode {
@@ -98,6 +122,9 @@ pub struct HistoryBase {
 
 /// Synthetic lazy-window marker used by remote transcript bootstraps.
 pub const RECENT_HISTORY_MARKER_PREFIX: &str = "Earlier remote history - ";
+
+/// `Pong.capabilities` entry of servers that accept `Request::ClientFocus`.
+pub const CLIENT_FOCUS_CAPABILITY: &str = "client_focus";
 
 impl HistoryBase {
     /// Request a bounded initial view. Older servers ignore this hint and
@@ -372,7 +399,7 @@ impl AuthChanged {
 pub type ReloadRecoverySnapshot = jcode_selfdev_types::ReloadRecoveryDirective;
 
 mod wire;
-pub use wire::{AccountUsageSnapshot, Request, ServerEvent, TurnIdentity};
+pub use wire::{AccountUsageSnapshot, AccountUsageWindow, Request, ServerEvent, TurnIdentity};
 pub use wire::{SessionToolConfig, SessionToolDefinition};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -684,7 +711,7 @@ pub struct SwarmMemberRuntime {
     /// sessions that have not emitted live telemetry. Never session totals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_status: Option<SwarmLiveStatus>,
-    /// Foreground blocking operation or completely blocked todo pause. A display reason,
+    /// Foreground blocking operation or user-authorization todo pause. A display reason,
     /// not an automatically waking durable dependency.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wait_reason: Option<String>,
@@ -831,6 +858,7 @@ impl Request {
             Request::Ping { id } => *id,
             Request::GetState { id } => *id,
             Request::GetTodos { id } => *id,
+            Request::ClientFocus { id, .. } => *id,
             Request::DebugCommand { id, .. } => *id,
             Request::ClientDebugCommand { id, .. } => *id,
             Request::ClientDebugResponse { id, .. } => *id,
@@ -846,6 +874,7 @@ impl Request {
             Request::AppletAction { id, .. } => *id,
             Request::CloseApplet { id, .. } => *id,
             Request::Transcript { id, .. } => *id,
+            Request::VoiceActivity { id, .. } => *id,
             Request::InputShell { id, .. } => *id,
             Request::CycleModel { id, .. } => *id,
             Request::RefreshModels { id } => *id,
@@ -966,6 +995,23 @@ pub fn encode_event(event: &ServerEvent) -> String {
     let mut json = serde_json::to_string(event).unwrap_or_else(|_| "{}".to_string());
     json.push('\n');
     json
+}
+
+/// Encode the same newline-terminated JSON as [`encode_event`], reusing storage
+/// for ordinary streaming events. Oversized snapshots are not retained on the
+/// next call. Callers should also release buffers over 64 KiB after writing to
+/// avoid retaining a large final snapshot while the connection is idle.
+pub fn encode_event_into(event: &ServerEvent, buffer: &mut Vec<u8>) {
+    if buffer.capacity() > 64 * 1024 {
+        *buffer = Vec::new();
+    } else {
+        buffer.clear();
+    }
+    if serde_json::to_writer(&mut *buffer, event).is_err() {
+        buffer.clear();
+        buffer.extend_from_slice(b"{}");
+    }
+    buffer.push(b'\n');
 }
 
 /// Decode a request from a JSON string.

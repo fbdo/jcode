@@ -288,8 +288,12 @@ pub(crate) async fn bounded_output_for(
                     libc::kill(-(pid as i32), libc::SIGKILL);
                 }
             }
-            let _ = child.kill().await;
-            let _ = child.wait().await;
+            if let Err(error) = child.kill().await {
+                crate::logging::debug(&format!("Failed to stop cloud git child: {error}"));
+            }
+            if let Err(error) = child.wait().await {
+                crate::logging::debug(&format!("Failed to reap cloud git child: {error}"));
+            }
             None
         }
     }
@@ -360,6 +364,50 @@ fn parse(bytes: &[u8]) -> Option<GitInfo> {
     Some(info)
 }
 
+static CLIENT_FOCUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+fn probe_wake() -> &'static tokio::sync::Notify {
+    static WAKE: std::sync::OnceLock<tokio::sync::Notify> = std::sync::OnceLock::new();
+    WAKE.get_or_init(tokio::sync::Notify::new)
+}
+
+/// Each probe spawns a shell and git (plus ssh for the cloud side). A
+/// backgrounded window shows nothing, so it only needs a slow safety refresh;
+/// regaining focus or a repo-mutating tool wakes the workers immediately.
+fn probe_period() -> Duration {
+    // Seed once from the state carried across a client re-exec, so a window
+    // that was already in the background keeps the slow period.
+    static SEED: std::sync::Once = std::sync::Once::new();
+    SEED.call_once(|| {
+        if !crate::tui::focus_carryover::initial_focus() {
+            CLIENT_FOCUSED.store(false, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    if CLIENT_FOCUSED.load(std::sync::atomic::Ordering::Relaxed) {
+        Duration::from_secs(5)
+    } else {
+        Duration::from_secs(120)
+    }
+}
+
+pub(crate) fn note_client_focus(focused: bool) {
+    let was = CLIENT_FOCUSED.swap(focused, std::sync::atomic::Ordering::Relaxed);
+    if focused && !was {
+        refresh_soon();
+    }
+}
+
+/// Re-probe both repos now instead of at the next period.
+pub(crate) fn refresh_soon() {
+    probe_wake().notify_waiters();
+}
+
+/// Sleep until the next SSH probe is due: the focus-dependent period, or an
+/// earlier wake from focus regain or a repo-mutating tool.
+pub(crate) async fn wait_for_next_probe() {
+    let _ = tokio::time::timeout(probe_period(), probe_wake().notified()).await;
+}
+
 /// Starts exactly two independent workers for this attach. No shared cache
 /// with the ordinary local status-line probe, and no stale success on failure.
 #[cfg(not(test))]
@@ -415,7 +463,7 @@ pub(crate) fn gather() -> Option<DualGitInfo> {
                             crate::bus::Bus::global()
                                 .publish(crate::bus::BusEvent::GitInfoRefreshed);
                         }
-                        tokio::time::sleep(Duration::from_secs(5)).await;
+                        wait_for_next_probe().await;
                     }
                 });
             });

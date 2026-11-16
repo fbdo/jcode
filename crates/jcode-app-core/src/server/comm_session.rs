@@ -979,6 +979,9 @@ pub(super) async fn handle_comm_stop(
         return;
     };
 
+    // Cancel the worker's in-flight turn before its handles are removed, or it
+    // keeps generating and editing files with nothing left to stop it by.
+    super::swarm::cancel_active_turns(&target_session);
     // Removing the session forgets its hook identity, so fire
     // `swarm_member_end` first. Stopping publishes no status update of its own.
     let stopping_transition = {

@@ -10,9 +10,10 @@ pub use jcode_config_types::{
     GatewayConfig, HookCommands, HooksConfig, KeybindingsConfig, LatexRenderingMode,
     LaunchHotkeyEntry, LaunchHotkeysConfig, MarkdownSpacingMode, MenubarConfig, NamedProviderAuth,
     NamedProviderConfig, NamedProviderModelConfig, NamedProviderType, NativeScrollbarConfig,
-    NotificationsConfig, PowerConfig, ProviderConfig, ReasoningDisplayMode, ResumeTimeMode,
-    SafetyConfig, SessionConfig, SessionPickerResumeAction, SponsorsConfig, SwarmSpawnMode,
-    SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig, WebSearchEngine,
+    NotificationsConfig, PowerConfig, ProviderConfig, ReasoningDisplayMode, ResumeOpenElsewhere,
+    ResumeTimeMode, SafetyConfig, SessionConfig, SessionPickerResumeAction, SponsorsConfig,
+    SwarmSpawnMode, SwarmStripLayout, TerminalConfig, UpdateChannel, WebSearchConfig,
+    WebSearchEngine,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};
@@ -124,6 +125,7 @@ const CONFIG_ENV_KEYS: &[&str] = &[
     "JCODE_REQUEST_COMPRESSION",
     "HOME",
     "JCODE_COMMIT_LOG_KEY",
+    "JCODE_RESUME_OPEN_ELSEWHERE",
     "JCODE_RESUME_PROJECT_SCOPE",
     "JCODE_RESUME_TIME",
     "JCODE_BROWSER_HANDOFF",
@@ -728,6 +730,9 @@ pub struct Config {
     /// Power-management configuration (prevent sleep while streaming)
     pub power: PowerConfig,
 
+    /// `jcode companion`: per-login helper for desktop effects.
+    pub companion: CompanionConfig,
+
     /// macOS menu bar session indicator
     pub menubar: MenubarConfig,
 
@@ -798,7 +803,7 @@ impl Default for AcpConfig {
     fn default() -> Self {
         Self {
             profile: "standard".to_string(),
-            tool_profile: "acp".to_string(),
+            tool_profile: "full".to_string(),
         }
     }
 }
@@ -847,7 +852,13 @@ pub struct ToolConfig {
     pub browser_handoff: bool,
     /// Foreground time before automatic tool handoff, in milliseconds. Zero disables it.
     pub auto_background_timeout_ms: u64,
-    /// Tool profile: "full" (default), "acp", "minimal"/"lite", or "none".
+    /// Tool profile: "full" (default), "minimal"/"lite", or "none".
+    ///
+    /// "acp" is a legacy name for "full". It used to be a nine-tool
+    /// allow-list, which left ACP clients without `todo`, `bg`, `swarm`, web
+    /// search, memory, and skills. The prompt and the auto-background handoff
+    /// still referred to those tools, and because the profile is server-wide,
+    /// TUI sessions attached to an ACP-started daemon were cut down too.
     pub profile: String,
     /// Explicit allow-list. When set, only these tools are exposed.
     /// Use "*" or "all" to expose all tools without an allow-list.
@@ -942,23 +953,6 @@ impl ToolConfig {
         } else if self.disable_base_tools || matches!(profile.as_str(), "none" | "off" | "disabled")
         {
             Some(HashSet::new())
-        } else if matches!(profile.as_str(), "acp") {
-            Some(
-                [
-                    "bash",
-                    "read",
-                    "write",
-                    "edit",
-                    "apply_patch",
-                    "agentgrep",
-                    "ls",
-                    "batch",
-                    "mcp",
-                ]
-                .into_iter()
-                .map(|name| name.to_string())
-                .collect(),
-            )
         } else if matches!(profile.as_str(), "minimal" | "lite" | "small") {
             Some(
                 [
@@ -1004,6 +998,46 @@ fn normalize_tool_name(name: &str) -> String {
     jcode_tool_types::resolve_tool_name(trimmed).to_string()
 }
 
+/// `jcode companion` features. Each toggle is read when the companion starts,
+/// except `autostart`, which clients read when they launch.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct CompanionConfig {
+    /// Start the companion in the background when a Jcode client launches
+    /// and none is running.
+    pub autostart: bool,
+    /// Copilot-key push-to-talk (Linux). Also needs `[dictation] global_devices`.
+    pub voice: bool,
+    /// Show a live waveform and transcript in the focused Jcode CLI while
+    /// companion push-to-talk records.
+    pub voice_waveform: bool,
+    /// Show desktop notifications for companion voice state.
+    pub voice_notifications: bool,
+    /// Open URLs and files for the server.
+    pub open: bool,
+    /// Open new terminal windows for the server.
+    pub spawn_terminal: bool,
+    /// Lid-close override while agents work (macOS/Windows).
+    pub lid: bool,
+    /// Hourly browser bridge auto-update.
+    pub browser_updates: bool,
+}
+
+impl Default for CompanionConfig {
+    fn default() -> Self {
+        Self {
+            autostart: true,
+            voice: true,
+            voice_waveform: true,
+            voice_notifications: true,
+            open: true,
+            spawn_terminal: true,
+            lid: true,
+            browser_updates: true,
+        }
+    }
+}
+
 /// External dictation / speech-to-text integration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -1028,6 +1062,9 @@ pub struct DictationConfig {
     /// (Linux evdev nodes, preferably stable `/dev/input/by-id/...` paths).
     /// Empty disables the companion's global voice listener.
     pub global_devices: Vec<std::path::PathBuf>,
+    /// Show live voice input (waveform and streaming transcript) inside the
+    /// input box. False puts it in the status line instead.
+    pub composer_preview: bool,
 }
 
 impl Default for DictationConfig {
@@ -1040,6 +1077,7 @@ impl Default for DictationConfig {
             vocabulary: Vec::new(),
             recorder: String::new(),
             global_devices: Vec::new(),
+            composer_preview: true,
         }
     }
 }
