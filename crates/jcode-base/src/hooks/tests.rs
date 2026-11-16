@@ -372,7 +372,9 @@ async fn pre_tool_gate_timeout_is_not_held_open_by_grandchild_stdout() {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     if alive {
-        let _ = std::process::Command::new("kill").args(["-9", &pid]).status();
+        let _ = std::process::Command::new("kill")
+            .args(["-9", &pid])
+            .status();
     }
     assert!(!alive, "grandchild {pid} survived the gate timeout");
 }
