@@ -681,11 +681,13 @@ impl SkillRegistry {
                 .collect();
             (!items.is_empty()).then_some(ListValue::Sequence(items))
         };
+        let allowed_tools = list("allowed-tools");
+        let arguments = list("arguments");
         Some(SkillFrontmatter {
             name,
             description,
-            allowed_tools: list("allowed-tools"),
-            arguments: list("arguments"),
+            allowed_tools,
+            arguments,
         })
     }
 
