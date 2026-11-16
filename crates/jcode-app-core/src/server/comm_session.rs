@@ -457,9 +457,12 @@ pub(super) async fn spawn_swarm_agent(
                 }
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
-                let context =
-                    super::swarm::swarm_hooks::spawn_context(swarm_id, req_session_id, label.as_deref())
-                        .with_client_terminal_env(client_terminal_env.clone());
+                let context = super::swarm::swarm_hooks::spawn_context(
+                    swarm_id,
+                    req_session_id,
+                    label.as_deref(),
+                )
+                .with_client_terminal_env(client_terminal_env.clone());
                 // Register the worker identity before the terminal starts, so
                 // its first prompt hook already carries agent_id/swarm. Undone
                 // below if the window does not launch.
