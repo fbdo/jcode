@@ -612,7 +612,7 @@ impl SkillRegistry {
     }
 
     /// Fallback for frontmatter that is not valid YAML: read the top-level
-    /// `name`, `description` and `allowed-tools` keys as plain text and ignore
+    /// `name`, `description`, `allowed-tools` and `arguments` keys as plain text and ignore
     /// everything else. Returns `None` unless both required keys are present.
     fn parse_frontmatter_lenient(yaml: &str) -> Option<SkillFrontmatter> {
         fn top_level_key(line: &str) -> Option<(&str, &str)> {
@@ -664,29 +664,28 @@ impl SkillRegistry {
 
         let name = scalar("name")?;
         let description = scalar("description")?;
-        let allowed_tools = entries
-            .iter()
-            .find(|(entry, _)| *entry == "allowed-tools")
-            .and_then(|(_, lines)| {
-                let inline = lines[0]
-                    .trim()
-                    .trim_start_matches('[')
-                    .trim_end_matches(']');
-                if !inline.is_empty() {
-                    return Some(AllowedTools::CommaDelimited(inline.to_string()));
-                }
-                let items: Vec<String> = lines[1..]
-                    .iter()
-                    .filter_map(|line| line.trim().strip_prefix('-'))
-                    .map(unquote)
-                    .filter(|item| !item.is_empty())
-                    .collect();
-                (!items.is_empty()).then_some(AllowedTools::Sequence(items))
-            });
+        let list = |key: &str| -> Option<ListValue> {
+            let (_, lines) = entries.iter().find(|(entry, _)| *entry == key)?;
+            let inline = lines[0]
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']');
+            if !inline.is_empty() {
+                return Some(ListValue::Delimited(inline.to_string()));
+            }
+            let items: Vec<String> = lines[1..]
+                .iter()
+                .filter_map(|line| line.trim().strip_prefix('-'))
+                .map(unquote)
+                .filter(|item| !item.is_empty())
+                .collect();
+            (!items.is_empty()).then_some(ListValue::Sequence(items))
+        };
         Some(SkillFrontmatter {
             name,
             description,
-            allowed_tools,
+            allowed_tools: list("allowed-tools"),
+            arguments: list("arguments"),
         })
     }
 
