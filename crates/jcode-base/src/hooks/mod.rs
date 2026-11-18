@@ -580,7 +580,9 @@ pub use origin::{
     set_pending_prompt_origin, set_pending_prompt_origin_named,
 };
 pub use payload::{TEXT_FIELD_LIMIT, common_payload, jcode_object, truncate_marked};
-pub use project::{CommandScope, ScopedCommand, hooks_scope_review, project_hooks_digest};
+pub use project::{
+    CommandScope, ScopedCommand, hooks_scope_review, project_hooks_digest, project_hooks_enabled,
+};
 pub use prompt_submit::PromptBlocked;
 pub use prompt_submit::{
     PromptSubmit, PromptSubmitOutcome, combine as combine_prompt_verdicts, prompt_payload,
