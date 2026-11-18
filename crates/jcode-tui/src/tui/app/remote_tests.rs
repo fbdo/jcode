@@ -76,56 +76,6 @@ fn ensure_test_jcode_home_if_unset() {
 }
 
 #[test]
-fn reload_handoff_active_when_server_flag_is_set() {
-    let state = RemoteRunState {
-        server_reload_in_progress: true,
-        ..RemoteRunState::default()
-    };
-
-    assert!(reconnect::reload_handoff_active(&state));
-}
-
-#[test]
-fn client_focus_defaults_to_true() {
-    let app = create_test_app();
-    assert!(
-        app.client_focused(),
-        "a freshly created client should start focused so terminals that never \
-         report focus events still animate/redraw normally"
-    );
-}
-
-#[test]
-fn presumed_focus_expires_only_while_unconfirmed() {
-    let timeout = crate::tui::app::App::PRESUMED_FOCUS_TIMEOUT + std::time::Duration::from_secs(1);
-    let old = std::time::Instant::now() - timeout;
-
-    // Fresh client: focus is presumed and stays so inside the grace period.
-    let mut app = create_test_app();
-    app.expire_presumed_focus();
-    assert!(app.client_focused());
-
-    // Never touched and never told about focus: stop presuming.
-    app.app_started = old;
-    app.expire_presumed_focus();
-    assert!(!app.client_focused());
-
-    // Input proves focus and restores it immediately, for good.
-    app.note_client_interaction();
-    assert!(app.client_focused());
-    app.expire_presumed_focus();
-    assert!(app.client_focused());
-
-    // A focus report alone also confirms, so a reporting terminal that says
-    // "focused" is trusted however long the user only watches.
-    let mut app = create_test_app();
-    app.app_started = old;
-    app.set_client_focused(true);
-    app.expire_presumed_focus();
-    assert!(app.client_focused());
-}
-
-#[test]
 fn idle_donut_pauses_while_unfocused() {
     let mut app = create_test_app();
 
@@ -1358,44 +1308,5 @@ include!("remote_tests/swarm_delivery.rs");
 
 include!("remote_tests/recall_cancellation.rs");
 
-fn queued_message_origin(queued: &[&str]) -> Option<String> {
-    use tokio::io::{AsyncBufReadExt, BufReader};
-    let mut app = create_test_app();
-    app.is_remote = true;
-    app.runtime_mode = crate::tui::app::AppRuntimeMode::RemoteClient;
-    app.queued_messages = queued.iter().map(|m| m.to_string()).collect();
-    let rt = tokio::runtime::Runtime::new().expect("runtime");
-    let _guard = rt.enter();
-    let mut remote = crate::tui::backend::RemoteConnection::dummy();
-    remote.mark_history_loaded();
-    let peer = remote.take_dummy_peer().expect("dummy peer");
-    rt.block_on(process_remote_followups(&mut app, &mut remote));
-    assert!(app.current_message_id.is_some(), "queued message was sent");
-    rt.block_on(async {
-        let (reader, _) = peer.into_split();
-        let mut line = String::new();
-        tokio::time::timeout(
-            std::time::Duration::from_secs(1),
-            BufReader::new(reader).read_line(&mut line),
-        )
-        .await
-        .expect("request written")
-        .expect("read request");
-        let value: serde_json::Value = serde_json::from_str(line.trim()).expect("json request");
-        value
-            .get("origin")
-            .and_then(|origin| origin.as_str())
-            .map(str::to_string)
-    })
-}
-
-#[test]
-fn queued_human_prompt_keeps_human_origin() {
-    assert_eq!(queued_message_origin(&["please also check the docs"]), None);
-}
-
-#[test]
-fn queued_poke_is_marked_auto() {
-    let poke = "You have 2 incomplete todos. Continue working, then update the todo tool.";
-    assert_eq!(queued_message_origin(&[poke]).as_deref(), Some("auto"));
-}
+#[path = "remote_tests_additional_tests.rs"]
+mod additional_reload_handoff_active_when_server_flag_is_set;
