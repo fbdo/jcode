@@ -1151,6 +1151,7 @@ async fn departing_parent_and_coordinator_update_worker_hook_identity() {
             parent_session_id: "hk-coord".into(),
             label: None,
             agent_type: None,
+            working_dir: None,
         },
     );
 
