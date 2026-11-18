@@ -457,33 +457,35 @@ pub(super) async fn spawn_swarm_agent(
                 }
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
-                let context = super::swarm::swarm_hooks::spawn_context(
-                    swarm_id,
-                    req_session_id,
-                    label.as_deref(),
-                )
-                .with_client_terminal_env(client_terminal_env.clone());
-                // Register the worker identity before the terminal starts, so
-                // its first prompt hook already carries agent_id/swarm. Undone
-                // below if the window does not launch.
-                super::swarm::swarm_hooks::register_worker_identity(
-                    session_id,
-                    swarm_id,
-                    req_session_id,
-                    label.as_deref(),
-                    definition.as_ref().map(|d| d.name.as_str()),
-                );
-                let launched = spawn_visible_session_window_with_context(
-                    session_id,
-                    cwd,
-                    selfdev_requested,
-                    provider_key,
-                    &context,
-                );
-                if !matches!(launched, Ok(true)) {
-                    crate::hooks::forget_swarm_identity(session_id);
+                let mut context = crate::session_launch::SessionSpawnContext::kind("swarm-agent")
+                    .env("JCODE_SPAWN_SWARM_ID", swarm_id)
+                    .env("JCODE_SPAWN_COORDINATOR_SESSION_ID", req_session_id);
+                if let Some(label) = label.as_deref() {
+                    context = context.env("JCODE_SPAWN_SWARM_LABEL", label);
                 }
-                launched
+                let context = context.with_client_terminal_env(client_terminal_env.clone());
+                // Register the identity before the client can submit its first
+                // prompt, so hooks on that prompt already see the worker.
+                super::swarm::swarm_hooks::launch_with_identity(
+                    &super::swarm::swarm_hooks::SpawnedWorker {
+                        session_id,
+                        swarm_id,
+                        coordinator_session_id: req_session_id,
+                        label: label.as_deref(),
+                        agent_type: definition.as_ref().map(|d| d.name.as_str()),
+                        spawn_mode: "visible",
+                        working_dir: None,
+                    },
+                    || {
+                        spawn_visible_session_window_with_context(
+                            session_id,
+                            cwd,
+                            selfdev_requested,
+                            provider_key,
+                            &context,
+                        )
+                    },
+                )
             },
         ),
     };
