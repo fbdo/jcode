@@ -2702,7 +2702,7 @@
       "unwrap_or_default": 2
     },
     "crates/jcode-tui/src/tui/ui_input.rs": {
-      "dot_ok": 3,
+      "dot_ok": 2,
       "let_underscore": 0,
       "unwrap_or_default": 0
     },
