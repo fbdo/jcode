@@ -407,7 +407,9 @@ pub(super) async fn handle_tick(app: &mut App, remote: &mut RemoteConnection) ->
         let combined = messages.join("\n\n");
         let auto_retry = reminder.is_some() && messages.is_empty();
         // Text a person queued keeps its human origin even though it is sent as `is_system`.
-        let queued_origin_is_auto = messages.iter().all(|msg| super::commands::is_poke_message(msg));
+        let queued_origin_is_auto = messages
+            .iter()
+            .all(|msg| super::commands::is_poke_message(msg));
         if !messages.is_empty() && !super::commands::queued_messages_are_only_pokes(&messages) {
             app.automatic_failover_targets.clear();
             app.automatic_failover_stopped = false;
