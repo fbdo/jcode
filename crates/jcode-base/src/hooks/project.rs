@@ -83,7 +83,9 @@ fn warn_once(key: String, message: &str) {
     }
 }
 
-fn project_hooks_enabled() -> bool {
+/// Whether project hooks are switched on (`project_hooks` config and the
+/// `JCODE_PROJECT_HOOKS` override).
+pub fn project_hooks_enabled() -> bool {
     if let Ok(value) = std::env::var("JCODE_PROJECT_HOOKS")
         && matches!(
             value.trim().to_ascii_lowercase().as_str(),
@@ -267,10 +269,20 @@ pub(super) fn active_project(cwd: Option<&str>) -> Option<Arc<ActiveProject>> {
         {
             // The parse is cached, the approval and the enable switch are not:
             // a revoke or `project_hooks = false` takes effect immediately.
-            return value.clone().filter(|project| {
-                project_hooks_enabled()
-                    && project_trust::is_trusted(&project.dir, Scope::Hooks, &project.digest)
-            });
+            // The file is re-read too: an edit or branch switch changes the
+            // digest, and the old commands must not outlive it. A changed
+            // file falls through to a fresh load.
+            let project = value.as_ref()?;
+            if !project_hooks_enabled()
+                || !project_trust::is_trusted(&project.dir, Scope::Hooks, &project.digest)
+            {
+                return None;
+            }
+            let file = project.dir.join(".jcode").join("config.toml");
+            if matches!(read_hooks_table(&file), Ok(Some((_, digest))) if digest == project.digest)
+            {
+                return Some(project.clone());
+            }
         }
     }
     let loaded = load(Path::new(cwd));

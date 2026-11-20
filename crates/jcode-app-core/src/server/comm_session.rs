@@ -457,33 +457,35 @@ pub(super) async fn spawn_swarm_agent(
                 }
                 // Tag the headed window as a swarm-agent spawn so spawn hooks
                 // and terminals can identify and reroute it (JCODE_SPAWN_*).
-                let context = super::swarm::swarm_hooks::spawn_context(
-                    swarm_id,
-                    req_session_id,
-                    label.as_deref(),
-                )
-                .with_client_terminal_env(client_terminal_env.clone());
-                // Register the worker identity before the terminal starts, so
-                // its first prompt hook already carries agent_id/swarm. Undone
-                // below if the window does not launch.
-                super::swarm::swarm_hooks::register_worker_identity(
-                    session_id,
-                    swarm_id,
-                    req_session_id,
-                    label.as_deref(),
-                    definition.as_ref().map(|d| d.name.as_str()),
-                );
-                let launched = spawn_visible_session_window_with_context(
-                    session_id,
-                    cwd,
-                    selfdev_requested,
-                    provider_key,
-                    &context,
-                );
-                if !matches!(launched, Ok(true)) {
-                    crate::hooks::forget_swarm_identity(session_id);
+                let mut context = crate::session_launch::SessionSpawnContext::kind("swarm-agent")
+                    .env("JCODE_SPAWN_SWARM_ID", swarm_id)
+                    .env("JCODE_SPAWN_COORDINATOR_SESSION_ID", req_session_id);
+                if let Some(label) = label.as_deref() {
+                    context = context.env("JCODE_SPAWN_SWARM_LABEL", label);
                 }
-                launched
+                let context = context.with_client_terminal_env(client_terminal_env.clone());
+                // Register the identity before the client can submit its first
+                // prompt, so hooks on that prompt already see the worker.
+                super::swarm::swarm_hooks::launch_with_identity(
+                    &super::swarm::swarm_hooks::SpawnedWorker {
+                        session_id,
+                        swarm_id,
+                        coordinator_session_id: req_session_id,
+                        label: label.as_deref(),
+                        agent_type: definition.as_ref().map(|d| d.name.as_str()),
+                        spawn_mode: "visible",
+                        working_dir: None,
+                    },
+                    || {
+                        spawn_visible_session_window_with_context(
+                            session_id,
+                            cwd,
+                            selfdev_requested,
+                            provider_key,
+                            &context,
+                        )
+                    },
+                )
             },
         ),
     };
@@ -1123,68 +1125,9 @@ pub(super) async fn handle_comm_stop(
     finish_request(swarm_mutation_runtime, &mutation_state, response).await;
 }
 
-fn swarm_stop_allowed_by_owner(
-    req_session_id: &str,
-    target_member: &SwarmMember,
-    force: bool,
-) -> bool {
-    force || target_member.report_back_to_session_id.as_deref() == Some(req_session_id)
-}
-
-async fn resolve_stop_target_session(
-    swarm_id: &str,
-    target: &str,
-    swarm_members: &Arc<RwLock<HashMap<String, SwarmMember>>>,
-) -> std::result::Result<String, String> {
-    let target = target.trim();
-    if target.is_empty() {
-        return Err("target_session is required.".to_string());
-    }
-
-    let members = swarm_members.read().await;
-    if members
-        .get(target)
-        .is_some_and(|member| member.swarm_id.as_deref() == Some(swarm_id))
-    {
-        return Ok(target.to_string());
-    }
-
-    let mut matches = members
-        .iter()
-        .filter(|(_, member)| member.swarm_id.as_deref() == Some(swarm_id))
-        .filter(|(session_id, member)| {
-            member.friendly_name.as_deref() == Some(target)
-                || session_id.starts_with(target)
-                || session_id.ends_with(target)
-        })
-        .map(|(session_id, member)| {
-            (
-                session_id.clone(),
-                member
-                    .friendly_name
-                    .as_deref()
-                    .unwrap_or(session_id)
-                    .to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-    matches.sort_by(|a, b| a.0.cmp(&b.0));
-
-    match matches.len() {
-        0 => Err(format!(
-            "Unknown swarm session '{target}'. Use an exact session ID, unique friendly name, or unique session ID prefix/suffix."
-        )),
-        1 => Ok(matches.remove(0).0),
-        _ => Err(format!(
-            "Ambiguous swarm session '{target}' matched: {}. Use an exact session ID.",
-            matches
-                .iter()
-                .map(|(session_id, friendly)| format!("{friendly} [{session_id}]"))
-                .collect::<Vec<_>>()
-                .join(", ")
-        )),
-    }
-}
+#[path = "swarm_stop_target.rs"]
+mod swarm_stop_target;
+use swarm_stop_target::*;
 
 fn swarm_member_status_is_stale_for_coordination(status: &str) -> bool {
     matches!(

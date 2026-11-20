@@ -76,56 +76,6 @@ fn ensure_test_jcode_home_if_unset() {
 }
 
 #[test]
-fn reload_handoff_active_when_server_flag_is_set() {
-    let state = RemoteRunState {
-        server_reload_in_progress: true,
-        ..RemoteRunState::default()
-    };
-
-    assert!(reconnect::reload_handoff_active(&state));
-}
-
-#[test]
-fn client_focus_defaults_to_true() {
-    let app = create_test_app();
-    assert!(
-        app.client_focused(),
-        "a freshly created client should start focused so terminals that never \
-         report focus events still animate/redraw normally"
-    );
-}
-
-#[test]
-fn presumed_focus_expires_only_while_unconfirmed() {
-    let timeout = crate::tui::app::App::PRESUMED_FOCUS_TIMEOUT + std::time::Duration::from_secs(1);
-    let old = std::time::Instant::now() - timeout;
-
-    // Fresh client: focus is presumed and stays so inside the grace period.
-    let mut app = create_test_app();
-    app.expire_presumed_focus();
-    assert!(app.client_focused());
-
-    // Never touched and never told about focus: stop presuming.
-    app.app_started = old;
-    app.expire_presumed_focus();
-    assert!(!app.client_focused());
-
-    // Input proves focus and restores it immediately, for good.
-    app.note_client_interaction();
-    assert!(app.client_focused());
-    app.expire_presumed_focus();
-    assert!(app.client_focused());
-
-    // A focus report alone also confirms, so a reporting terminal that says
-    // "focused" is trusted however long the user only watches.
-    let mut app = create_test_app();
-    app.app_started = old;
-    app.set_client_focused(true);
-    app.expire_presumed_focus();
-    assert!(app.client_focused());
-}
-
-#[test]
 fn idle_donut_pauses_while_unfocused() {
     let mut app = create_test_app();
 
@@ -395,6 +345,45 @@ fn remote_skill_invocation_with_prompt_sends_remote_turn() {
                 && message.content == "/remote-skill explain the change"),
         "remote skill prompt should be visible as the submitted user turn"
     );
+}
+
+#[test]
+fn remote_skill_arguments_come_from_expanded_paste_not_label() {
+    let mut app = create_test_app();
+    app.is_remote = true;
+    app.runtime_mode = crate::tui::app::AppRuntimeMode::RemoteClient;
+    let temp = tempfile::tempdir().expect("create skill dir");
+    let skill_dir = temp.path().join(".jcode/skills/remote-skill");
+    std::fs::create_dir_all(&skill_dir).expect("create skill dir");
+    std::fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: remote-skill\ndescription: Paste regression skill\n---\nUse $ARGUMENTS.\n",
+    )
+    .expect("write skill");
+    app.session.working_dir = Some(temp.path().to_string_lossy().to_string());
+    app.remote_model_switch_in_flight = true;
+
+    let rt = tokio::runtime::Runtime::new().expect("runtime");
+    let _guard = rt.enter();
+    let mut remote = crate::tui::backend::RemoteConnection::dummy();
+    remote.mark_history_loaded();
+    rt.block_on(crate::tui::app::remote::submit_remote_slash_input(
+        &mut app,
+        &mut remote,
+        crate::tui::app::input::PreparedInput {
+            raw_input: "/remote-skill [Pasted text #1 +5 lines]".to_string(),
+            expanded: "/remote-skill \"two words\" b\nc\nd\ne".to_string(),
+            images: vec![],
+        },
+    ))
+    .expect("remote skill prompt should be accepted");
+
+    let args = app
+        .pending_skill_arguments_after_model_switch
+        .as_deref()
+        .expect("arguments deferred with the prompt");
+    assert!(!args.contains("Pasted text"), "label leaked: {args}");
+    assert!(args.starts_with("\"two words\" b"), "{args}");
 }
 
 #[test]
@@ -1396,6 +1385,10 @@ fn queued_human_prompt_keeps_human_origin() {
 
 #[test]
 fn queued_poke_is_marked_auto() {
-    let poke = "You have 2 incomplete todos. Continue working, then update the todo tool.";
+    // The completion follow-up is never dropped as a stale incomplete-todo poke.
+    let poke = crate::todo::TODO_COMPLETION_CONTINUATION_MESSAGE;
     assert_eq!(queued_message_origin(&[poke]).as_deref(), Some("auto"));
 }
+
+#[path = "remote_tests_additional_tests.rs"]
+mod additional_reload_handoff_active_when_server_flag_is_set;
