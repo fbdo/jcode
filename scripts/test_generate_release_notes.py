@@ -69,6 +69,7 @@ class GenerateReleaseNotesTests(unittest.TestCase):
             )
             env = {
                 **os.environ,
+                "GITHUB_REPOSITORY": "1jehuang/jcode",
                 "JCODE_PUBLISHED_RELEASES_JSON": releases_fixture,
             }
             output = subprocess.check_output(
@@ -101,7 +102,11 @@ class GenerateReleaseNotesTests(unittest.TestCase):
                     }
                 )
             )
-            env = {**os.environ, "JCODE_SKIP_GITHUB_API": "1"}
+            env = {
+                **os.environ,
+                "GITHUB_REPOSITORY": "1jehuang/jcode",
+                "JCODE_SKIP_GITHUB_API": "1",
+            }
             output = subprocess.check_output(
                 ["bash", str(root / "scripts/generate_release_notes.sh"), "v1.0.3"],
                 cwd=root,
@@ -117,7 +122,11 @@ class GenerateReleaseNotesTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             self._init_repo(root)
-            env = {**os.environ, "JCODE_SKIP_GITHUB_API": "1"}
+            env = {
+                **os.environ,
+                "GITHUB_REPOSITORY": "1jehuang/jcode",
+                "JCODE_SKIP_GITHUB_API": "1",
+            }
             output = subprocess.check_output(
                 ["bash", str(root / "scripts/generate_release_notes.sh"), "v1.0.3", "v1.0.2"],
                 cwd=root,
