@@ -570,6 +570,7 @@ fn test_resume_all_result_event_roundtrip() -> Result<()> {
 fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Result<()> {
     let req = Request::Message {
         id: 88,
+        jarvis_voice: false,
         content: "inspect this".to_string(),
         images: vec![
             ("image/png".to_string(), "AAA".to_string()),
@@ -585,6 +586,7 @@ fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Resu
     let decoded = parse_request_json(&json)?;
     let Request::Message {
         id,
+        jarvis_voice: false,
         content,
         images,
         system_reminder,
@@ -592,6 +594,7 @@ fn test_message_request_roundtrip_preserves_images_and_system_reminder() -> Resu
         skill_arguments: _,
         origin: _,
         no_reply,
+        ..
     } = decoded
     else {
         return Err(anyhow!("expected Message"));
@@ -775,6 +778,7 @@ fn test_message_request_skill_arguments_roundtrip_and_legacy_default() -> Result
 
     let json = serde_json::to_string(&Request::Message {
         id: 2,
+        jarvis_voice: false,
         content: "x".to_string(),
         images: vec![],
         system_reminder: None,
@@ -803,6 +807,7 @@ fn test_message_request_origin_roundtrip_and_legacy_default() -> Result<()> {
     assert_eq!(origin, None);
     let json = serde_json::to_string(&Request::Message {
         id: 2,
+        jarvis_voice: false,
         content: "x".to_string(),
         images: vec![],
         system_reminder: None,
