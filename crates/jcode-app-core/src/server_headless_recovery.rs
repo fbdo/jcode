@@ -290,6 +290,7 @@ impl Server {
                     Some(reminder),
                     events.sender(),
                     (true, None),
+                    None,
                 )
                 .await;
 
