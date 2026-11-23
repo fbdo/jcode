@@ -343,6 +343,7 @@ fn handle_server_event_inner(
                 app.insert_thought_line(thought_line);
                 return eager_stream_redraw;
             }
+            app.stream_message_ended = false;
             app.streaming.response_output.text(&text);
             let mut needs_redraw = false;
             if matches!(
@@ -392,6 +393,7 @@ fn handle_server_event_inner(
             // client TPS timer), so the status arrives here as `Streaming`; flip it
             // to `Thinking` while reasoning deltas flow. The next `TextDelta` moves
             // it back to `Streaming`.
+            app.stream_message_ended = false;
             if !matches!(app.status, ProcessingStatus::RunningTool(_)) {
                 let thinking_start = *app.thinking_start.get_or_insert_with(Instant::now);
                 if !matches!(app.status, ProcessingStatus::Thinking(_)) {
@@ -744,6 +746,7 @@ fn handle_server_event_inner(
                 }
                 _ => crate::message::ConnectionPhase::Connecting,
             };
+            app.stream_message_ended = false;
             app.status = if matches!(cp, crate::message::ConnectionPhase::Streaming) {
                 app.resume_streaming_tps();
                 app.connection_phase_started = None;
@@ -1230,12 +1233,15 @@ fn handle_server_event_inner(
                 })
             {
                 app.rate_limit_reset = Some(Instant::now() + reset_duration);
-                let rate_limit_line = app.rate_limit_notice_with_nudge(reset_duration.as_secs());
+                let (rate_limit_line, nudged) =
+                    app.rate_limit_notice_with_nudge(reset_duration.as_secs());
                 app.push_display_message(DisplayMessage::system(rate_limit_line));
-                if is_system {
-                    app.set_status_notice("Rate limited; queued system retry");
-                } else {
-                    app.set_status_notice("Rate limited; queued retry");
+                if !nudged {
+                    if is_system {
+                        app.set_status_notice("Rate limited; queued system retry");
+                    } else {
+                        app.set_status_notice("Rate limited; queued retry");
+                    }
                 }
                 app.is_processing = false;
                 app.status = ProcessingStatus::Idle;
@@ -1367,6 +1373,7 @@ fn handle_server_event_inner(
             if is_connectivity_error
                 && app.schedule_pending_remote_network_wait_with_force(&message, true)
             {
+                app.note_turn_interrupted_for_subscribe_nudge();
                 return false;
             }
             if is_connectivity_error && app.rate_limit_pending_message.is_some() {
